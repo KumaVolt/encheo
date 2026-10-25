@@ -56,7 +56,7 @@ fn link_ios() {
                 .status()
                 .is_ok_and(|s| s.success());
             if !thinned {
-                std::os::unix::fs::symlink(&archive, &dest).unwrap();
+                std::fs::copy(&archive, &dest).unwrap();
             }
             if lib != "mpv" {
                 println!("cargo:rustc-link-lib=static={lib}");
