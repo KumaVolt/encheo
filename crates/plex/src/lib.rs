@@ -174,6 +174,15 @@ pub fn with_platform_roots(builder: reqwest::ClientBuilder) -> reqwest::ClientBu
     builder
 }
 
+/// [`with_platform_roots`] for blocking clients.
+pub fn with_platform_roots_blocking(builder: reqwest::blocking::ClientBuilder) -> reqwest::blocking::ClientBuilder {
+    #[cfg(target_os = "android")]
+    let builder = builder.tls_certs_only(
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().filter_map(|c| reqwest::Certificate::from_der(c).ok()),
+    );
+    builder
+}
+
 /// Keep tokens out of error messages and logs.
 pub(crate) fn strip_token(url: &str) -> String {
     match url::Url::parse(url) {

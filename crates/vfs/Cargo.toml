@@ -1,0 +1,17 @@
+[package]
+name = "encheo-vfs"
+description = "File sources for Encheo: local folders, WebDAV, SMB (more to come)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+encheo-plex = { version = "0.1.0", path = "../plex" }
+quick-xml = "0.42.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+smb2 = "0.35.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
+url = "2.5.8"
