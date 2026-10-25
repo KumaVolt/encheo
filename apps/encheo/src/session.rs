@@ -21,6 +21,27 @@ pub struct Session {
     /// The user chose to use Encheo without Plex.
     #[serde(default)]
     pub skip_plex: bool,
+    #[serde(default)]
+    pub prefs: Prefs,
+}
+
+/// Player preferences that carry over between files.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Prefs {
+    #[serde(default)]
+    pub auto_skip: bool,
+    #[serde(default = "one")]
+    pub sub_scale: f64,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { auto_skip: false, sub_scale: 1.0 }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

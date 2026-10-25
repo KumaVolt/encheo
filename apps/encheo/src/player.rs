@@ -219,6 +219,9 @@ impl Player {
         let start = start_secs.filter(|s| *s > 5.0).map(|s| format!("+{s:.0}")).unwrap_or_else(|| "none".into());
         let _ = self.mpv.set_property("start", start);
         let _ = self.mpv.set_property("pause", false);
+        // Delays belong to one file.
+        let _ = self.mpv.set_property("sub-delay", 0.0);
+        let _ = self.mpv.set_property("audio-delay", 0.0);
         // Per-file options; `%len%value` quoting keeps commas inside a header intact.
         let joined = headers.join(",");
         let options = if headers.is_empty() { String::new() } else { format!("http-header-fields=%{}%{joined}", joined.len()) };
@@ -401,6 +404,27 @@ impl Player {
 
     pub fn set_speed(&self, speed: f64) {
         let _ = self.mpv.set_property("speed", speed);
+    }
+
+    pub fn set_sub_scale(&self, scale: f64) {
+        let _ = self.mpv.set_property("sub-scale", scale);
+    }
+
+    /// Subtitle and audio delays, in seconds (positive = later).
+    pub fn sub_delay(&self) -> f64 {
+        self.mpv.get_property::<f64>("sub-delay").unwrap_or(0.0)
+    }
+
+    pub fn set_sub_delay(&self, secs: f64) {
+        let _ = self.mpv.set_property("sub-delay", secs);
+    }
+
+    pub fn audio_delay(&self) -> f64 {
+        self.mpv.get_property::<f64>("audio-delay").unwrap_or(0.0)
+    }
+
+    pub fn set_audio_delay(&self, secs: f64) {
+        let _ = self.mpv.set_property("audio-delay", secs);
     }
 
     /// Seek while dragging the scrubber: snaps to keyframes, so it keeps up.

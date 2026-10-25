@@ -112,6 +112,14 @@ export global PlayerState {
     in-out property <[TrackOption]> sub-tracks;
     in-out property <bool> sub-off;
     in-out property <float> speed: 1.0;
+    in-out property <float> sub-scale: 1.0;     // subtitle size
+    in-out property <float> sub-delay;          // seconds, + = later
+    in-out property <float> audio-delay;        // seconds, + = later
+    in-out property <bool> auto-skip;           // skip intros/credits by themselves
+    callback set-sub-scale(float);
+    callback nudge-sub-delay(float);
+    callback nudge-audio-delay(float);
+    callback set-auto-skip(bool);
     in-out property <string> list-title;
     in-out property <[ListEntry]> list-items;
     // Online subtitle search (Plex / Jellyfin / Emby).
@@ -1555,6 +1563,33 @@ component PanelHeading inherits Text {
     vertical-alignment: bottom;
 }
 
+// "−  0.3 s  +" for delays.
+component Stepper inherits HorizontalLayout {
+    in property <string> label;
+    in property <float> value;
+    callback nudge(float);
+    spacing: 6px;
+    padding-top: 2px;
+    Text { text: root.label; color: white; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+    for d in [-0.1, 0.1]: Rectangle {
+        width: 30px;
+        height: 28px;
+        border-radius: 7px;
+        background: sa.has-hover ? #ffffff1c : #ffffff10;
+        Text { text: d < 0 ? "−" : "+"; color: white; font-size: 15px; font-weight: 700; }
+        sa := TouchArea { mouse-cursor: pointer; clicked => { root.nudge(d); } }
+    }
+    Text {
+        width: 64px;
+        text: (root.value >= 0 ? "+" : "") + Math.round(root.value * 10) / 10 + " s";
+        color: Math.abs(root.value) < 0.05 ? #ffffff90 : Theme.accent;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
 component Player inherits Rectangle {
     // Phones: status bar and gesture bar; the video may run under them, the controls may not.
     in property <length> inset-top;
@@ -1713,6 +1748,27 @@ component Player inherits Rectangle {
                         }
                         sta := TouchArea { mouse-cursor: pointer; clicked => { PlayerState.set-speed(sp); } }
                     }
+                }
+                PanelHeading { text: "SUBTITLE SIZE"; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    padding-top: 4px;
+                    for sz in [{ v: 0.8, t: "S" }, { v: 1.0, t: "M" }, { v: 1.25, t: "L" }, { v: 1.6, t: "XL" }]: Rectangle {
+                        height: 30px;
+                        border-radius: 7px;
+                        background: Math.abs(PlayerState.sub-scale - sz.v) < 0.01 ? Theme.accent : sza.has-hover ? #ffffff1c : #ffffff10;
+                        Text { text: sz.t; color: Math.abs(PlayerState.sub-scale - sz.v) < 0.01 ? Theme.accent-text : white; font-size: 12px; font-weight: 600; }
+                        sza := TouchArea { mouse-cursor: pointer; clicked => { PlayerState.set-sub-scale(sz.v); } }
+                    }
+                }
+                PanelHeading { text: "SYNC"; }
+                Stepper { label: "Subtitle delay"; value: PlayerState.sub-delay; nudge(d) => { PlayerState.nudge-sub-delay(d); } }
+                Stepper { label: "Audio delay"; value: PlayerState.audio-delay; nudge(d) => { PlayerState.nudge-audio-delay(d); } }
+                PanelHeading { text: "INTROS AND CREDITS"; }
+                PanelRow {
+                    text: "Skip automatically";
+                    checked: PlayerState.auto-skip;
+                    clicked => { PlayerState.set-auto-skip(!PlayerState.auto-skip); }
                 }
             }
         }

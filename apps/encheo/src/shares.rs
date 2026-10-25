@@ -286,6 +286,7 @@ fn play_file(index: usize, path: &str) {
                     episodes,
                     streams_applied: false,
                     detected: HashMap::new(),
+                    skipped: vec![],
                     user_picked_sub: false,
                     user_picked_audio: false,
                     show_key: None,

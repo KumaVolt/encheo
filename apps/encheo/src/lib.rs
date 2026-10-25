@@ -104,6 +104,8 @@ struct NowPlaying {
     streams_applied: bool,
     /// Languages detected from the text of untagged subtitle tracks, by stream index.
     detected: HashMap<i64, langs::Detected>,
+    /// Markers (by start, ms) already auto-skipped, so seeking back into one doesn't skip again.
+    skipped: Vec<u64>,
     /// The user chose a subtitle track themselves; don't second-guess it.
     user_picked_sub: bool,
     user_picked_audio: bool,
@@ -1173,6 +1175,7 @@ fn play_opts(item: Item, from_start: bool) {
                     episodes,
                     streams_applied: false,
                     detected: HashMap::new(),
+                    skipped: vec![],
                     user_picked_sub: false,
                     user_picked_audio: false,
                     show_key,
@@ -1297,6 +1300,8 @@ fn tick() {
     ps.set_volume(p.volume() as f32);
     ps.set_muted(p.muted());
     ps.set_speed(p.speed() as f32);
+    ps.set_sub_delay(p.sub_delay() as f32);
+    ps.set_audio_delay(p.audio_delay() as f32);
     if !is_episode() {
         update_neighbours(&ui); // chapters appear once the file is open
     }
@@ -1327,6 +1332,20 @@ fn tick() {
         Some(_) => "Skip Credits".into(),
         None => SharedString::new(),
     });
+    // Auto-skip: jump once per marker. Credits only when there's more to watch after them (a
+    // post-credits scene); otherwise the episode just ends and the next one starts.
+    if let Some(m) = marker.filter(|_| ps.get_auto_skip()) {
+        let first_time = with_state(|s| {
+            s.now_playing.as_mut().is_some_and(|np| {
+                let key = m.start_time_offset;
+                if np.skipped.contains(&key) { false } else { np.skipped.push(key); true }
+            })
+        });
+        if first_time {
+            p.seek_to(m.end_time_offset as f64 / 1000.0);
+            toast(&ui, if m.kind == MarkerKind::Intro { "Skipped the intro" } else { "Skipped the credits" });
+        }
+    }
     if hide && ps.get_controls_visible() && ps.get_panel().is_empty() {
         ps.set_controls_visible(false);
     }
@@ -2573,7 +2592,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
     MODELS.with(|m| *m.borrow_mut() = Some(models));
 
     match Player::new() {
-        Ok(p) => PLAYER.with(|slot| *slot.borrow_mut() = Some(Rc::new(p))),
+        Ok(p) => {
+            let prefs = with_state(|s| s.session.prefs.clone());
+            p.set_sub_scale(prefs.sub_scale);
+            let ps = ui.global::<PlayerState>();
+            ps.set_sub_scale(prefs.sub_scale as f32);
+            ps.set_auto_skip(prefs.auto_skip);
+            PLAYER.with(|slot| *slot.borrow_mut() = Some(Rc::new(p)));
+        }
         Err(e) => eprintln!("mpv failed to start: {e}"),
     }
 
@@ -2707,6 +2733,37 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         ps.on_pick(|id| pick(id.to_string()));
         ps.on_find_subs(|lang| find_subtitles(lang.to_string()));
+        ps.on_set_sub_scale(|v| {
+            if let Some(p) = player() {
+                p.set_sub_scale(v as f64);
+            }
+            crate::ps(&crate::ui()).set_sub_scale(v);
+            with_state(|s| {
+                s.session.prefs.sub_scale = v as f64;
+                s.session.save();
+            });
+        });
+        ps.on_nudge_sub_delay(|d| {
+            if let Some(p) = player() {
+                let v = ((p.sub_delay() + d as f64) * 10.0).round() / 10.0;
+                p.set_sub_delay(v);
+                crate::ps(&crate::ui()).set_sub_delay(v as f32);
+            }
+        });
+        ps.on_nudge_audio_delay(|d| {
+            if let Some(p) = player() {
+                let v = ((p.audio_delay() + d as f64) * 10.0).round() / 10.0;
+                p.set_audio_delay(v);
+                crate::ps(&crate::ui()).set_audio_delay(v as f32);
+            }
+        });
+        ps.on_set_auto_skip(|on| {
+            crate::ps(&crate::ui()).set_auto_skip(on);
+            with_state(|s| {
+                s.session.prefs.auto_skip = on;
+                s.session.save();
+            });
+        });
     }
     ui.on_play_track(|id| {
         let (tracks, idx) = with_state(|s| {
