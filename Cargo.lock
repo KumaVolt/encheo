@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "encheo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "encheo-discovery",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "encheo-discovery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mdns-sd",
  "serde_json",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "encheo-jellyfin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "encheo-plex",
  "reqwest",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "encheo-plex"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reqwest",
  "serde",
@@ -1502,7 +1502,7 @@ dependencies = [
 
 [[package]]
 name = "encheo-sublang"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "matroska-demuxer",
  "reqwest",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "encheo-vfs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "encheo-plex",

@@ -1,5 +1,11 @@
-First preview of Encheo, an open-source media player for Windows, Linux, macOS and Android
-(phones and Android TV). Early software: expect rough edges.
+Preview of Encheo, an open-source media player for Windows, Linux, macOS and Android (phones and
+Android TV). Early software: expect rough edges.
+
+## New in 0.1.1
+
+- **New licence: Mozilla Public License 2.0** (was GPL-3.0). The code stays open; this also makes
+  app store releases possible (iOS later). 0.1.0 remains available under GPL-3.0.
+- **About screen** (ⓘ in the sidebar) with version, licence and credits.
 
 ## What's in it
 
