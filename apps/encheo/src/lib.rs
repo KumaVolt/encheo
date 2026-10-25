@@ -363,7 +363,7 @@ fn enter_home() {
                 if items.is_empty() {
                     continue;
                 }
-                let model = Rc::new(VecModel::from(items.iter().map(|i| poster(i, false)).collect::<Vec<_>>()));
+                let model = Rc::new(VecModel::from(group_recent(items).iter().map(recent_poster).collect::<Vec<_>>()));
                 let title = if several { format!("Recently Added in {} · {group}", l.title) } else { format!("Recently Added in {}", l.title) };
                 rows.push(HomeRow {
                     title: title.into(),
@@ -374,7 +374,8 @@ fn enter_home() {
                 });
                 row_models.push(model);
             }
-            remember(on_deck.into_iter().chain(libs.into_iter().flat_map(|(_, _, items)| items)));
+            let grouped: Vec<Item> = libs.iter().flat_map(|(_, _, items)| group_recent(items).into_iter().map(|(i, _)| i)).collect();
+            remember(on_deck.into_iter().chain(libs.into_iter().flat_map(|(_, _, items)| items)).chain(grouped));
             with_models(|m| {
                 m.continue_watching.set_vec(cw);
                 *m.row_models.borrow_mut() = row_models;
@@ -382,6 +383,57 @@ fn enter_home() {
             });
         });
     });
+}
+
+/// Recently added, one card per show (and per album): episodes of the same show collapse into the
+/// show, in the order the newest one arrived. Each entry carries how many new items it stands for.
+fn group_recent(items: &[Item]) -> Vec<(Item, usize)> {
+    let mut out: Vec<(Item, usize, Option<Item>)> = Vec::new();
+    for item in items {
+        let parent = match item.kind {
+            ItemKind::Episode => item.grandparent_rating_key.clone().map(|k| (k, ItemKind::Show)),
+            ItemKind::Track => item.parent_rating_key.clone().map(|k| (k, ItemKind::Album)),
+            _ => None,
+        };
+        let Some((key, kind)) = parent else {
+            out.push((item.clone(), 1, None));
+            continue;
+        };
+        if let Some(entry) = out.iter_mut().find(|(i, _, _)| i.rating_key == key) {
+            entry.1 += 1;
+            continue;
+        }
+        let group = Item {
+            rating_key: key,
+            kind: kind.clone(),
+            title: if kind == ItemKind::Show { item.grandparent_title.clone() } else { item.parent_title.clone() }.unwrap_or_default(),
+            thumb: if kind == ItemKind::Show { item.grandparent_thumb.clone() } else { item.parent_thumb.clone() }.or_else(|| item.thumb.clone()),
+            art: item.grandparent_art.clone().or_else(|| item.art.clone()),
+            parent_title: if kind == ItemKind::Album { item.grandparent_title.clone() } else { None },
+            ..Default::default()
+        };
+        out.push((group, 1, Some(item.clone())));
+    }
+    out.into_iter()
+        .map(|(mut group, n, first)| {
+            // A single new episode keeps its label for the subtitle.
+            if n == 1 && let Some(ep) = first.filter(|e| e.kind == ItemKind::Episode) {
+                group.summary = ep.episode_label().map(|l| format!("{l} new"));
+            }
+            (group, n)
+        })
+        .collect()
+}
+
+fn recent_poster((item, count): &(Item, usize)) -> Poster {
+    let mut p = poster(item, false);
+    match item.kind {
+        ItemKind::Show if *count > 1 => p.subtitle = format!("{count} new episodes").into(),
+        ItemKind::Show => p.subtitle = item.summary.clone().unwrap_or_else(|| "New episode".into()).into(),
+        ItemKind::Album if *count > 1 => p.subtitle = format!("{count} new tracks").into(),
+        _ => {}
+    }
+    p
 }
 
 fn select_library(index: i32) {
@@ -1672,6 +1724,99 @@ fn toggle_pip() {
     ps.set_pip(entering);
 }
 
+// ---------- Network discovery and speed test ----------
+
+/// Look for servers and shares on the local network for the Add Source form.
+fn scan_network() {
+    let ui = ui();
+    if ui.get_scanning() {
+        return;
+    }
+    ui.set_scanning(true);
+    rt().spawn_blocking(|| {
+        let found = encheo_discovery::discover(Duration::from_secs(3));
+        on_ui(move |ui| {
+            ui.set_scanning(false);
+            let rows: Vec<FoundSource> = found
+                .into_iter()
+                .filter(|f| f.kind != encheo_discovery::Kind::Plex) // Plex servers come with the account
+                .map(|f| {
+                    let (kind, label) = match f.kind {
+                        encheo_discovery::Kind::Smb => (1, "SMB"),
+                        encheo_discovery::Kind::WebDav => (2, "WebDAV"),
+                        encheo_discovery::Kind::Emby => (3, "Emby"),
+                        _ => (3, "Jellyfin"),
+                    };
+                    FoundSource { kind, label: label.into(), name: f.name.into(), address: f.address.into() }
+                })
+                .collect();
+            ui.set_found_sources(ModelRc::new(VecModel::from(rows)));
+        });
+    });
+}
+
+/// How fast the source or server on screen delivers a real video, in Mbit/s.
+fn speed_test() {
+    let ui = ui();
+    toast(&ui, "Testing speed…");
+    // A file source: the first video in the folder on screen.
+    if let Some((_, _)) = with_state(|s| s.share_view.clone()) {
+        let item = with_state(|s| {
+            let ids: Vec<String> = with_models(|m| m.grid.iter().map(|p| p.id.to_string()).collect());
+            ids.iter().filter_map(|id| s.items.get(id)).find(|i| matches!(i.kind, ItemKind::Movie | ItemKind::Episode)).cloned()
+        });
+        let Some(item) = item else { return toast(&ui, "Open a folder with a video in it to test the speed.") };
+        rt().spawn_blocking(move || {
+            let result = shares::open_reader(&item)
+                .ok_or_else(|| "couldn't open the file".to_string())
+                .and_then(|mut r| encheo_discovery::measure(&mut r, 96 << 20, Duration::from_secs(8)).map_err(|e| e.to_string()));
+            on_ui(move |ui| report_speed(ui, result));
+        });
+        return;
+    }
+    // A media server library: the first title with a file (a show's first episode).
+    let first = with_models(|m| m.grid.row_data(0)).map(|p| p.id.to_string());
+    let Some(id) = first else { return toast(&ui, "Nothing here to test with.") };
+    let Some(server) = backend_for(&id) else { return };
+    rt().spawn(async move {
+        let mut item = server.metadata(&id).await.ok().flatten();
+        if item.as_ref().is_some_and(|i| i.kind == ItemKind::Show) {
+            let ep = server.all_episodes(&id).await.ok().and_then(|e| e.into_iter().next());
+            item = match ep {
+                Some(e) => server.metadata(&e.rating_key).await.ok().flatten(),
+                None => None,
+            };
+        }
+        let url = item.and_then(|i| server.stream_url(&i));
+        let result = tokio::task::spawn_blocking(move || {
+            let url = url.ok_or_else(|| "nothing playable found".to_string())?;
+            let mut r = encheo_sublang::HttpReader::new(&url).map_err(|e| e.to_string())?;
+            encheo_discovery::measure(&mut r, 96 << 20, Duration::from_secs(8)).map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        on_ui(move |ui| report_speed(ui, result));
+    });
+}
+
+fn report_speed(ui: &AppWindow, result: Result<f64, String>) {
+    match result {
+        Ok(mbps) => toast(ui, format!("{:.0} Mbit/s — {}", mbps, speed_verdict(mbps))),
+        Err(e) => toast(ui, format!("Speed test failed: {e}")),
+    }
+}
+
+/// What a speed is good for. 4K Blu-ray remuxes peak around 80–100 Mbit/s.
+fn speed_verdict(mbps: f64) -> &'static str {
+    match mbps {
+        m if m >= 120.0 => "enough for anything, including 4K remuxes",
+        m if m >= 50.0 => "fine for 4K; the biggest remuxes may buffer",
+        m if m >= 20.0 => "fine for 1080p; 4K may buffer",
+        m if m >= 8.0 => "fine for smaller 1080p files",
+        _ => "too slow for HD; expect buffering",
+    }
+}
+
 // ---------- Search ----------
 
 /// Called on every keystroke; waits for a short pause in typing before asking the server.
@@ -1952,6 +2097,7 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
                 r if r == last => {
                     ui.set_add_source_status(SharedString::new());
                     ui.set_add_source_open(true);
+                    scan_network();
                 }
                 r => select_library(r - 2),
             }
@@ -2469,6 +2615,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         shares::add_source(kind, name.to_string(), location.to_string(), user.to_string(), password.to_string())
     });
     ui.on_remove_source(shares::remove_current);
+    ui.on_scan(scan_network);
+    ui.on_speed_test(speed_test);
+    ui.set_can_speed_test(true);
     ui.global::<Nav>().on_key(|k| nav_key(k.as_str()));
     ui.global::<Nav>().on_leave_search(|| {
         hide_keyboard();
@@ -2495,6 +2644,36 @@ pub fn run() -> Result<(), slint::PlatformError> {
 #[cfg(test)]
 mod tests {
     use super::{runtime, short_summary};
+
+    #[test]
+    fn recent_episodes_collapse_into_shows() {
+        use encheo_plex::{Item, ItemKind};
+        let ep = |n: u32, show: &str| Item {
+            rating_key: format!("{show}-{n}"),
+            kind: ItemKind::Episode,
+            title: format!("Ep {n}"),
+            index: Some(n),
+            parent_index: Some(1),
+            grandparent_rating_key: Some(show.into()),
+            grandparent_title: Some(format!("Show {show}")),
+            ..Default::default()
+        };
+        let movie = Item { rating_key: "m".into(), kind: ItemKind::Movie, title: "Film".into(), ..Default::default() };
+        let items = vec![ep(10, "a"), ep(9, "a"), movie, ep(3, "b"), ep(8, "a")];
+        let g = super::group_recent(&items);
+        let summary: Vec<(String, usize)> = g.iter().map(|(i, n)| (i.title.clone(), *n)).collect();
+        assert_eq!(summary, [("Show a".to_string(), 3), ("Film".to_string(), 1), ("Show b".to_string(), 1)]);
+        assert_eq!(g[0].0.kind, ItemKind::Show);
+        assert_eq!(g[0].0.rating_key, "a");
+        assert_eq!(g[2].0.summary.as_deref(), Some("S1 · E3 new"));
+    }
+
+    #[test]
+    fn speed_verdicts() {
+        assert!(super::speed_verdict(150.0).contains("4K remuxes"));
+        assert!(super::speed_verdict(30.0).contains("1080p"));
+        assert!(super::speed_verdict(3.0).contains("too slow"));
+    }
 
     #[test]
     fn runtimes() {

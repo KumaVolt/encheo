@@ -1,0 +1,10 @@
+[package]
+name = "encheo-discovery"
+description = "Find media servers and shares on the local network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mdns-sd = "0.21.6"
+serde_json = "1.0.154"

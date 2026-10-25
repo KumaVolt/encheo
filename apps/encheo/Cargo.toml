@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 dirs = "7.0.0"
+encheo-discovery = { version = "0.1.0", path = "../../crates/discovery" }
 encheo-jellyfin = { version = "0.1.0", path = "../../crates/jellyfin" }
 encheo-plex = { version = "0.1.0", path = "../../crates/plex" }
 encheo-sublang = { version = "0.1.0", path = "../../crates/sublang" }
