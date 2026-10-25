@@ -21,21 +21,29 @@ encheo-sublang = { version = "0.2.0", path = "../../crates/sublang" }
 encheo-vfs = { version = "0.2.0", path = "../../crates/vfs" }
 glow = "0.18.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
-libmpv2 = "6.0.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 uuid = { version = "1.29.0", features = ["v4"] }
 
+# Not on iOS yet (see src/player_ios.rs).
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+libmpv2 = "6.0.0"
+
 # Desktop: winit windows, OpenGL rendering (femtovg).
-[target.'cfg(not(target_os = "android"))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 open = "5.4.5"
 slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2", "unstable-winit-030"] }
 
 # Android: android-activity backend (Skia, asked for OpenGL ES).
 [target.'cfg(target_os = "android")'.dependencies]
 slint = { version = "1.18", default-features = false, features = ["std", "backend-android-activity-06", "compat-1-2"] }
+
+# iOS: winit, Skia on Metal (Slint has no OpenGL on iOS).
+[target.'cfg(target_os = "ios")'.dependencies]
+open = "5.4.5"
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2", "unstable-winit-030"] }
 
 [build-dependencies]
 slint-build = "1.18"

@@ -9,6 +9,7 @@ mod images;
 mod langs;
 mod progress;
 mod shares;
+#[cfg_attr(target_os = "ios", path = "player_ios.rs")]
 mod player;
 mod session;
 
@@ -2613,8 +2614,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     #[cfg(target_os = "android")]
     slint::BackendSelector::new().require_opengl_es().select()?;
     #[cfg(not(target_os = "android"))]
-    slint::BackendSelector::new()
-        .require_opengl()
+    let selector = slint::BackendSelector::new();
+    // iOS: Slint draws with Metal there (no OpenGL), so no requirement.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let selector = selector.require_opengl();
+    #[cfg(target_os = "ios")]
+    if let Some(home) = std::env::var_os("HOME") {
+        session::set_data_dir(std::path::PathBuf::from(home).join("Library/Application Support/Encheo"));
+    }
+    #[cfg(not(target_os = "android"))]
+    selector
         .with_winit_window_attributes_hook(|attrs| {
             // macOS look: content runs under a transparent titlebar (the window buttons sit in
             // the sidebar) and the transparent parts of the window get the system blur. Other
@@ -2636,7 +2645,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
     ui.global::<Theme>().set_buttons_in_content(cfg!(target_os = "macos"));
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
-    ui.global::<PlayerState>().set_window_modes(cfg!(not(target_os = "android")));
+    ui.global::<PlayerState>().set_window_modes(cfg!(not(any(target_os = "android", target_os = "ios"))));
     UI.with(|u| *u.borrow_mut() = Some(ui.as_weak()));
     with_state(|s| s.session = Session::load());
     shares::sync_configs();
