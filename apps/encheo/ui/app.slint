@@ -1,3 +1,5 @@
+import { AboutSlint } from "std-widgets.slint";
+
 // Encheo UI. One window, four screens: sign-in, home (with library pages and search), details,
 // player. Rust fills the models; this file only lays things out and forwards input.
 //
@@ -224,6 +226,7 @@ component Icon inherits Rectangle {
     if root.name == "plus": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke + 0.2px; commands: "M12 5v14M5 12h14"; }
     if root.name == "trash": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4.5 6.5h15M9.5 6.5V4h5v2.5M6.5 6.5l1 13h9l1-13"; }
     if root.name == "gauge": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4 16a8 8 0 1 1 16 0M12 16l4.5-5"; }
+    if root.name == "info": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M12 3.5a8.5 8.5 0 1 1 0 17a8.5 8.5 0 1 1 0-17zM12 11v5.5M12 7.6v0.4"; }
     if root.name == "check": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke + 0.6px; commands: "M5 12.5l4.5 4.5L19 7.5"; }
 }
 
@@ -568,6 +571,7 @@ component Sidebar inherits Rectangle {
     callback sign-out();
     callback search(string);
     callback add-source();
+    callback about();
     width: 240px;
     background: Theme.sidebar;
     Rectangle { x: parent.width - 1px; width: 1px; background: Theme.separator; }
@@ -625,6 +629,7 @@ component Sidebar inherits Rectangle {
                 Text { text: root.server-kind; color: Theme.tertiary; font-size: 11px; }
             }
             Rectangle { horizontal-stretch: 1; }
+            IconButton { icon: "info"; size: 30px; icon-size: 15px; clicked => { root.about(); } }
             IconButton { icon: "signout"; size: 30px; icon-size: 15px; clicked => { root.sign-out(); } }
         }
     }
@@ -805,6 +810,7 @@ component Home inherits Rectangle {
     callback refresh();
     callback add-source();
     callback remove-source();
+    callback about();
     background: Theme.bg;
 
     // Phones and narrow windows: no sidebar; search and library chips across the top instead.
@@ -974,6 +980,7 @@ component Home inherits Rectangle {
         sign-out => { root.sign-out(); }
         search(q) => { root.search(q); }
         add-source => { root.add-source(); }
+        about => { root.about(); }
     }
 }
 
@@ -1832,6 +1839,8 @@ export component AppWindow inherits Window {
     callback sign-out();
     in property <bool> grid-can-remove;
     in-out property <bool> add-source-open;
+    in-out property <bool> about-open;
+    in property <string> app-version;
     in property <bool> add-source-busy;
     in-out property <string> add-source-status;
     in property <[FoundSource]> found-sources;
@@ -1970,6 +1979,7 @@ export component AppWindow inherits Window {
         can-speed-test: root.can-speed-test;
         speed-test => { root.speed-test(); }
         remove-source => { root.remove-source(); }
+        about => { root.about-open = true; }
     }
     if root.screen == "detail": Detail {
         y: root.inset-top;
@@ -2039,6 +2049,34 @@ export component AppWindow inherits Window {
         scanning: root.scanning;
         connect(k, n, l, u, p) => { root.add-source(k, n, l, u, p); }
         cancel => { root.add-source-open = false; }
+    }
+
+    if root.about-open: Rectangle {
+        background: #000000a0;
+        TouchArea { clicked => { root.about-open = false; } }
+        Rectangle {
+            width: Math.min(420px, root.width - 32px);
+            height: about.preferred-height;
+            border-radius: 16px;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.separator;
+            TouchArea { }
+            about := VerticalLayout {
+                padding: 24px;
+                spacing: 10px;
+                Text { text: "Encheo"; color: Theme.accent; font-size: 28px; font-weight: 800; horizontal-alignment: center; }
+                Text { text: "Version " + root.app-version; color: Theme.secondary; font-size: 13px; horizontal-alignment: center; }
+                Text {
+                    text: "An open-source media player. Mozilla Public License 2.0.\nPlayback by libmpv and FFmpeg.";
+                    color: Theme.text; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+                }
+                Text { text: "github.com/KumaVolt/encheo"; color: Theme.tertiary; font-size: 12px; horizontal-alignment: center; }
+                Rectangle { height: 8px; }
+                AboutSlint { }
+                HorizontalLayout { alignment: center; Button { text: "Close"; clicked => { root.about-open = false; } } }
+            }
+        }
     }
 
     if root.toast != "": Rectangle {

@@ -2540,6 +2540,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         .select()?;
     let ui = AppWindow::new()?;
     ui.global::<Theme>().set_buttons_in_content(cfg!(target_os = "macos"));
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     ui.global::<PlayerState>().set_window_modes(cfg!(not(target_os = "android")));
     UI.with(|u| *u.borrow_mut() = Some(ui.as_weak()));
     with_state(|s| s.session = Session::load());

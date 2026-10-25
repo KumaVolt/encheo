@@ -71,4 +71,7 @@ apps/encheo      the app: UI, player and glue
 
 ## Licence
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+[Mozilla Public License 2.0](LICENSE). Versions up to 0.1.0 were released under GPL-3.0-or-later.
+
+Built with [Slint](https://slint.dev) (under the Slint Royalty-free License) and
+[libmpv](https://mpv.io). [![Made with Slint](https://img.shields.io/badge/Made_with-Slint-2379F4)](https://slint.dev)

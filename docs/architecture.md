@@ -26,7 +26,8 @@ All Rust, one workspace.
 - **The Rust core does everything that makes it feel like a library:** indexing, filename matching,
   metadata, sources, media servers, sync. It has no UI and no playback code, so it's testable on its own.
 - **Slint for the UI.** It's the Rust toolkit that runs on Windows, Linux, macOS and Android, has
-  keyboard/D-pad focus navigation, and its free licence is GPL-3, which matches ours. egui is weak on
+  keyboard/D-pad focus navigation, and its royalty-free licence allows desktop and mobile apps (with a
+  "Made with Slint" credit, in the About screen). egui is weak on
   Android TV; iced and gpui don't target Android.
 
 ## Playback with libmpv
@@ -87,8 +88,13 @@ build/
 
 ## Licensing
 
-Encheo is **GPL-3.0-or-later**, so GPL builds of mpv and FFmpeg are fine; we bundle them and
-publish the build scripts. No closed-source dependencies.
+Encheo is **MPL-2.0** (file-level copyleft; App Store compatible). Dependencies:
+
+- **Rust crates:** permissive (MIT, Apache-2.0, BSD…), plus Slint under its Royalty-free License 2.0,
+  which needs the "Made with Slint" credit (About screen, README).
+- **libmpv / FFmpeg:** desktop and Android releases bundle community GPL builds; MPL-2.0 code may be
+  combined with GPL code, and the source is public. App Store builds (iOS) need LGPL builds of
+  mpv and FFmpeg, shipped as dynamic frameworks.
 
 - **Name and look:** original name, icons and artwork; no other product's branding.
 - **TMDB:** free for non-commercial use with attribution. If a paid hosted sync service ever
