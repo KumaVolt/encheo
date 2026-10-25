@@ -45,8 +45,85 @@ const OPTIONS: &[(&str, &str)] = &[
     ("target-colorspace-hint", "yes"),
 ];
 
+/// File sources mpv can read through `encheo://<source>/<path>`, by source number.
+pub static STREAM_SOURCES: std::sync::Mutex<Vec<Option<std::sync::Arc<encheo_vfs::Source>>>> = std::sync::Mutex::new(Vec::new());
+
+/// mpv's handle on an open file from a source.
+pub struct SourceStream(std::panic::AssertUnwindSafe<Box<dyn encheo_vfs::ReadSeek>>);
+
+fn stream_open(_: &mut (), uri: &str) -> SourceStream {
+    // `encheo://3/Movies/Heat%20(1995).mkv`
+    let rest = uri.strip_prefix("encheo://").unwrap_or(uri);
+    let (index, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let path = percent_decode(path);
+    let source = index.parse::<usize>().ok().and_then(|i| STREAM_SOURCES.lock().ok()?.get(i).cloned().flatten());
+    // A panic here is how libmpv2 reports a failed open to mpv.
+    let source = source.unwrap_or_else(|| panic!("unknown source in {uri}"));
+    let file = source.open(&path).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    SourceStream(std::panic::AssertUnwindSafe(file))
+}
+
+fn stream_close(_: Box<SourceStream>) {}
+
+fn stream_read(s: &mut SourceStream, buf: &mut [std::ffi::c_char]) -> i64 {
+    use std::io::Read;
+    // SAFETY: c_char and u8 have the same size and alignment.
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len()) };
+    match s.0.read(bytes) {
+        Ok(n) => n as i64,
+        Err(e) => {
+            eprintln!("stream read: {e}");
+            -1
+        }
+    }
+}
+
+fn stream_seek(s: &mut SourceStream, offset: i64) -> i64 {
+    use std::io::{Seek, SeekFrom};
+    match s.0.seek(SeekFrom::Start(offset.max(0) as u64)) {
+        Ok(p) => p as i64,
+        Err(_) => -1,
+    }
+}
+
+fn stream_size(s: &mut SourceStream) -> i64 {
+    s.0.len().map(|l| l as i64).unwrap_or(-1)
+}
+
+/// The URL mpv plays for a file in a source.
+pub fn stream_url(source: usize, path: &str) -> String {
+    let enc: String = path.split('/').map(|seg| url_encode(seg)).collect::<Vec<_>>().join("/");
+    format!("encheo://{source}/{enc}")
+}
+
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub struct Player {
     mpv: &'static Mpv,
+    /// Keeps the `encheo://` protocol registered.
+    _protocol: Option<libmpv2::protocol::Protocol<'static, SourceStream, ()>>,
     render: RefCell<Option<RenderContext<'static>>>,
     gl: RefCell<Option<glow::Context>>,
 }
@@ -65,7 +142,28 @@ impl Player {
         })?;
         // One player for the life of the app; leaking it lets the render context borrow it for
         // 'static and live in the UI thread's state.
-        Ok(Self { mpv: Box::leak(Box::new(mpv)), render: RefCell::new(None), gl: RefCell::new(None) })
+        let mpv: &'static Mpv = Box::leak(Box::new(mpv));
+        // SAFETY: the callbacks don't call back into libmpv.
+        let protocol = unsafe {
+            libmpv2::protocol::Protocol::new(
+                mpv,
+                "encheo".into(),
+                (),
+                stream_open,
+                stream_close,
+                stream_read,
+                Some(stream_seek),
+                Some(stream_size),
+            )
+        };
+        let protocol = match protocol.register() {
+            Ok(()) => Some(protocol),
+            Err(e) => {
+                eprintln!("encheo:// protocol: {e}");
+                None
+            }
+        };
+        Ok(Self { mpv, _protocol: protocol, render: RefCell::new(None), gl: RefCell::new(None) })
     }
 
     /// Hook into Slint's GL. `on_frame` is called (from mpv's threads) whenever a new video frame is
@@ -113,10 +211,23 @@ impl Player {
     }
 
     pub fn load(&self, url: &str, start_secs: Option<f64>) {
+        self.load_with_headers(url, start_secs, &[]);
+    }
+
+    /// Like [`Player::load`], sending extra HTTP headers (credentials) with this file's requests.
+    pub fn load_with_headers(&self, url: &str, start_secs: Option<f64>, headers: &[String]) {
         let start = start_secs.filter(|s| *s > 5.0).map(|s| format!("+{s:.0}")).unwrap_or_else(|| "none".into());
         let _ = self.mpv.set_property("start", start);
         let _ = self.mpv.set_property("pause", false);
-        if let Err(e) = self.mpv.command("loadfile", &[url, "replace"]) {
+        // Per-file options; `%len%value` quoting keeps commas inside a header intact.
+        let joined = headers.join(",");
+        let options = if headers.is_empty() { String::new() } else { format!("http-header-fields=%{}%{joined}", joined.len()) };
+        let result = if options.is_empty() {
+            self.mpv.command("loadfile", &[url, "replace"])
+        } else {
+            self.mpv.command("loadfile", &[url, "replace", "-1", &options])
+        };
+        if let Err(e) = result {
             eprintln!("loadfile: {e}");
         }
     }
@@ -401,6 +512,14 @@ pub fn clock(secs: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stream_urls_round_trip() {
+        let url = super::stream_url(2, "TV/Show (2020)/S01E01 100%.mkv");
+        assert_eq!(url, "encheo://2/TV/Show%20%282020%29/S01E01%20100%25.mkv");
+        let path = url.split_once("encheo://2/").unwrap().1;
+        assert_eq!(super::percent_decode(path), "TV/Show (2020)/S01E01 100%.mkv");
+    }
+
     #[test]
     fn clock_formats() {
         assert_eq!(super::clock(0.0), "0:00");

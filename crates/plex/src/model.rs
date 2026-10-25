@@ -215,6 +215,8 @@ pub enum ItemKind {
     Artist,
     Album,
     Track,
+    /// Not from Plex: a folder in a file source.
+    Folder,
     #[default]
     #[serde(other)]
     Other,

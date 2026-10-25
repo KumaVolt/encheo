@@ -5,6 +5,8 @@
 
 mod images;
 mod langs;
+mod progress;
+mod shares;
 mod player;
 mod session;
 
@@ -50,6 +52,9 @@ struct State {
     server: Option<Server>,
     library_keys: Vec<String>,
     library_kinds: Vec<String>,
+    /// The file source and folder shown in the grid, if a file source is selected.
+    share_view: Option<(usize, String)>,
+    progress: Option<progress::Store>,
     /// Everything we've seen, by rating key, so clicks can find the full item.
     items: HashMap<String, Item>,
     images: HashMap<String, Image>,
@@ -279,6 +284,8 @@ fn load_profile() {
 
 fn enter_home() {
     load_profile();
+    with_state(|s| s.share_view = None);
+    ui().set_grid_can_remove(false);
     let Some(server) = server() else { return };
     let ui = ui();
     ui.set_server_name(server.name().into());
@@ -319,10 +326,14 @@ fn enter_home() {
                         .collect::<Vec<_>>(),
                 )
             });
+            shares::refresh_sidebar();
             if with_state(|s| s.generation) != generation {
                 return;
             }
-            let cw: Vec<Poster> = on_deck.iter().map(|i| poster(i, true)).collect();
+            // Files from shares first (most recent), then the server's on-deck items.
+            let (file_posters, file_items): (Vec<Poster>, Vec<Item>) = shares::continue_watching().into_iter().unzip();
+            remember(file_items);
+            let cw: Vec<Poster> = file_posters.into_iter().chain(on_deck.iter().map(|i| poster(i, true))).collect();
             let mut rows = Vec::new();
             let mut row_models = Vec::new();
             for (index, title, kind, items) in &recent {
@@ -355,6 +366,16 @@ fn select_library(index: i32) {
     if index < 0 {
         return enter_home();
     }
+    let share = with_state(|s| {
+        (s.library_kinds.get(index as usize).map(String::as_str) == Some("folder"))
+            .then(|| s.library_keys.get(index as usize).and_then(|k| k.strip_prefix("share:")?.parse::<usize>().ok()))
+            .flatten()
+    });
+    if let Some(si) = share {
+        return shares::browse(si, String::new());
+    }
+    with_state(|s| s.share_view = None);
+    ui.set_grid_can_remove(false);
     let Some(server) = server() else { return };
     let (key, kind, generation) = with_state(|s| {
         s.generation += 1;
@@ -557,6 +578,9 @@ fn backdrop_url(item: &Item) -> String {
 // ---------- Details ----------
 
 fn open_item(id: String) {
+    if shares::open(&id) {
+        return;
+    }
     let Some(item) = with_state(|s| s.items.get(&id).cloned()) else { return };
     // Episodes and part-watched movies from "Continue Watching" go straight to the player.
     if item.kind == ItemKind::Episode {
@@ -949,6 +973,9 @@ fn play_fresh(item: Item) {
 }
 
 fn play_opts(item: Item, from_start: bool) {
+    if shares::play_item(&item) {
+        return;
+    }
     let Some(server) = server() else { return };
     let ui = ui();
     let back_to = ui.get_screen().to_string();
@@ -1080,6 +1107,10 @@ fn report(state: PlayState, position: f64) {
 }
 
 fn report_item(item: Item, state: PlayState, position: f64) {
+    if shares::is_share_id(&item.rating_key) {
+        return shares::record_progress(&item, position);
+    }
+    let _ = state;
     let Some(server) = server() else { return };
     rt().spawn(async move {
         let _ = server.report_progress(&item, state, (position * 1000.0) as u64).await;
@@ -1111,7 +1142,9 @@ fn stop_playback() {
         _ => {
             let sel = ui.get_selected_library();
             ui.set_screen("home".into());
-            if sel == -2 { refresh() } else { select_library(sel) }
+            if !shares::reload_current() {
+                if sel == -2 { refresh() } else { select_library(sel) }
+            }
         }
     });
 }
@@ -1303,13 +1336,26 @@ fn detect_subtitle_languages(p: &Player) {
     if let Some(found) = cached {
         return use_detected(&item_id, found);
     }
-    let Some(server) = server() else { return };
-    let url = server.stream_url(&part_key);
+    let share_item = with_state(|s| s.now_playing.as_ref().map(|n| n.item.clone())).filter(|i| shares::is_share_id(&i.rating_key));
+    let url = match share_item {
+        Some(_) => None,
+        None => match server() {
+            Some(server) => Some(server.stream_url(&part_key)),
+            None => return,
+        },
+    };
     rt().spawn_blocking(move || {
         let started = Instant::now();
-        let reader = match encheo_sublang::HttpReader::new(&url) {
-            Ok(r) => r,
-            Err(e) => return eprintln!("subtitle scan: {e}"),
+        let reader: Box<dyn ReadSeekSend> = match (&url, &share_item) {
+            (Some(url), _) => match encheo_sublang::HttpReader::new(url) {
+                Ok(r) => Box::new(r),
+                Err(e) => return eprintln!("subtitle scan: {e}"),
+            },
+            (None, Some(item)) => match shares::open_reader(item) {
+                Some(r) => Box::new(r),
+                None => return,
+            },
+            _ => return,
         };
         let texts = match encheo_sublang::untagged_subtitle_text(reader, &encheo_sublang::Budget::default()) {
             Ok(t) => t,
@@ -1329,6 +1375,10 @@ fn detect_subtitle_languages(p: &Player) {
         });
     });
 }
+
+/// What the subtitle scanner reads from: a server URL or a file source.
+trait ReadSeekSend: std::io::Read + std::io::Seek + Send {}
+impl<T: std::io::Read + std::io::Seek + Send + ?Sized> ReadSeekSend for T {}
 
 fn use_detected(item_id: &str, found: HashMap<i64, langs::Detected>) {
     let still_playing = with_state(|s| {
@@ -1468,7 +1518,9 @@ fn choose_track_inner(kind: StreamKind, mpv_id: Option<i64>) {
         None => Some(0), // subtitles off
         Some(id) => p.tracks(mpv_kind).iter().find(|t| t.id == id).and_then(|t| plex_stream_for(t, kind, &streams)).map(|s| s.id),
     };
-    let part = with_state(|s| s.now_playing.as_ref().and_then(|np| np.item.primary_part().map(|p| p.id)));
+    let part = with_state(|s| {
+        s.now_playing.as_ref().filter(|np| !shares::is_share_id(&np.item.rating_key)).and_then(|np| np.item.primary_part().map(|p| p.id))
+    });
     if let (Some(server), Some(part), Some(plex_id)) = (server(), part, plex_id) {
         rt().spawn(async move {
             let r = if kind == StreamKind::Audio {
@@ -1630,6 +1682,9 @@ fn search(query: String) {
 }
 
 fn refresh() {
+    if shares::reload_current() {
+        return;
+    }
     let ui = ui();
     match ui.get_selected_library() {
         -2 => search(ui.get_search_text().to_string()),
@@ -1640,7 +1695,7 @@ fn refresh() {
 // ---------- Music ----------
 
 fn play_music(items: Vec<Item>, start: usize) {
-    let Some(server) = server() else { return };
+    let server = server();
     let Some(p) = player() else { return toast(&ui(), "The player didn't start (libmpv missing?).") };
     let items: Vec<Item> = items.into_iter().filter(|i| i.primary_part().is_some()).collect();
     if items.is_empty() {
@@ -1648,7 +1703,11 @@ fn play_music(items: Vec<Item>, start: usize) {
     }
     let start = start.min(items.len() - 1);
     for (n, item) in items.iter().enumerate() {
-        let url = server.stream_url(item.primary_part().expect("filtered"));
+        let url = match (shares::music_url(item), &server) {
+            (Some(u), _) => u,
+            (None, Some(server)) => server.stream_url(item.primary_part().expect("filtered")),
+            (None, None) => continue,
+        };
         if n == 0 {
             p.load(&url, None);
         } else {
@@ -2162,6 +2221,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.global::<PlayerState>().set_window_modes(cfg!(not(target_os = "android")));
     UI.with(|u| *u.borrow_mut() = Some(ui.as_weak()));
     with_state(|s| s.session = Session::load());
+    shares::sync_configs();
 
     let models = Models {
         libraries: Rc::new(VecModel::default()),
@@ -2347,6 +2407,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     ui.on_search(|q| search(q.to_string()));
+    ui.on_add_source(|kind, name, location, user, password| {
+        shares::add_source(kind, name.to_string(), location.to_string(), user.to_string(), password.to_string())
+    });
+    ui.on_remove_source(shares::remove_current);
     ui.global::<Nav>().on_key(|k| nav_key(k.as_str()));
     ui.global::<Nav>().on_leave_search(|| {
         hide_keyboard();

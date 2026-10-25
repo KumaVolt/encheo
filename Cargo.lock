@@ -1189,6 +1189,7 @@ dependencies = [
  "dirs",
  "encheo-plex",
  "encheo-sublang",
+ "encheo-vfs",
  "glow",
  "image",
  "libmpv2",

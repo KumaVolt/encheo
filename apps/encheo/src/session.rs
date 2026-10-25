@@ -12,6 +12,9 @@ pub struct Session {
     pub client_id: String,
     pub token: Option<String>,
     pub server: Option<SavedServer>,
+    /// File sources (folders, WebDAV, SMB) the user added.
+    #[serde(default)]
+    pub sources: Vec<encheo_vfs::Config>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

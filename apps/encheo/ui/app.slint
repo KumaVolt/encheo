@@ -204,6 +204,11 @@ component Icon inherits Rectangle {
     if root.name == "eye": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M2.5 12s3.5-6.5 9.5-6.5s9.5 6.5 9.5 6.5s-3.5 6.5-9.5 6.5S2.5 12 2.5 12zM12 9a3 3 0 1 1 0 6a3 3 0 1 1 0-6z"; }
     if root.name == "restart": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M5 5v6h6M5.6 11A7 7 0 1 1 7 17"; }
     if root.name == "person": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M12 4a4 4 0 1 1 0 8a4 4 0 1 1 0-8zM4.5 20c1-3.8 4-5.5 7.5-5.5s6.5 1.7 7.5 5.5"; }
+    if root.name == "folder": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M3 6.5h6.5l2 2.5H21v10H3z"; }
+    if root.name == "film": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4 4.5h16v15H4zM8 4.5v15M16 4.5v15M4 9.5h4M4 14.5h4M16 9.5h4M16 14.5h4"; }
+    if root.name == "music": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M9 17.5V5.5l11-2v12M9 17.5a2.75 2.75 0 1 1-5.5 0a2.75 2.75 0 1 1 5.5 0zM20 15.5a2.75 2.75 0 1 1-5.5 0a2.75 2.75 0 1 1 5.5 0z"; }
+    if root.name == "plus": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke + 0.2px; commands: "M12 5v14M5 12h14"; }
+    if root.name == "trash": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4.5 6.5h15M9.5 6.5V4h5v2.5M6.5 6.5l1 13h9l1-13"; }
     if root.name == "check": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke + 0.6px; commands: "M5 12.5l4.5 4.5L19 7.5"; }
 }
 
@@ -276,7 +281,10 @@ component PosterCard inherits Rectangle {
         drop-shadow-blur: ta.has-hover || root.focused ? 22px : 8px;
         drop-shadow-offset-y: ta.has-hover || root.focused ? 8px : 3px;
         drop-shadow-color: #00000090;
-        Text {
+        property <string> icon:
+            root.data.art-url == "icon:folder" ? "folder" : root.data.art-url == "icon:back" ? "back" :
+            root.data.art-url == "icon:film" ? "film" : root.data.art-url == "icon:music" ? "music" : "";
+        if icon == "": Text {
             text: root.data.title;
             color: Theme.tertiary;
             font-size: 13px;
@@ -284,6 +292,13 @@ component PosterCard inherits Rectangle {
             horizontal-alignment: center;
             width: parent.width - 20px;
             visible: img.source.width == 0;
+        }
+        if icon != "": Icon {
+            name: icon;
+            width: 44px;
+            height: 44px;
+            stroke: 1.4px;
+            tint: icon == "folder" || icon == "back" ? Theme.accent : Theme.tertiary;
         }
         img := Image {
             width: parent.width;
@@ -531,6 +546,7 @@ component Sidebar inherits Rectangle {
     callback select(int);
     callback sign-out();
     callback search(string);
+    callback add-source();
     width: 240px;
     background: Theme.sidebar;
     Rectangle { x: parent.width - 1px; width: 1px; background: Theme.separator; }
@@ -555,6 +571,12 @@ component Sidebar inherits Rectangle {
             active: root.selected == i;
             focused: Nav.active && Nav.zone == "side" && Nav.row == i + 2;
             clicked => { root.select(i); }
+        }
+        SideRow {
+            text: "Add Source";
+            icon: "plus";
+            focused: Nav.active && Nav.zone == "side" && Nav.row == root.libraries.length + 2;
+            clicked => { root.add-source(); }
         }
         Rectangle { vertical-stretch: 1; }
         Rectangle { height: 1px; background: Theme.separator; }
@@ -587,6 +609,104 @@ component Chip inherits Rectangle {
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> secret;
+    in-out property <string> text;
+    spacing: 6px;
+    Text { text: root.label; color: Theme.secondary; font-size: 12px; font-weight: 600; }
+    Rectangle {
+        height: 36px;
+        border-radius: 8px;
+        background: input.has-focus ? Theme.fill-hover : Theme.fill;
+        border-width: input.has-focus ? 1.5px : 0px;
+        border-color: Theme.accent.with-alpha(0.7);
+        Text {
+            x: 12px;
+            text: root.placeholder;
+            color: Theme.tertiary;
+            font-size: 14px;
+            visible: input.text == "";
+        }
+        input := TextInput {
+            x: 12px;
+            width: parent.width - 24px;
+            text <=> root.text;
+            color: Theme.text;
+            font-size: 14px;
+            vertical-alignment: center;
+            single-line: true;
+            input-type: root.secret ? InputType.password : InputType.text;
+        }
+    }
+}
+
+component AddSourceDialog inherits Rectangle {
+    in property <bool> busy;
+    in property <string> status;
+    callback connect(int, string, string, string, string);
+    callback cancel();
+    in-out property <int> kind: 1;   // 0 folder, 1 SMB, 2 WebDAV
+    in-out property <string> name;
+    in-out property <string> location;
+    in-out property <string> user;
+    in-out property <string> password;
+    background: #000000a0;
+    TouchArea { }   // block clicks to what's behind
+    Rectangle {
+        width: Math.min(480px, root.width - 32px);
+        height: form.preferred-height;
+        border-radius: 16px;
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.separator;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #000000b0;
+        form := VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            Text { text: "Add a Source"; color: Theme.text; font-size: 20px; font-weight: 700; }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                for k[i] in ["Folder", "SMB", "WebDAV"]: Chip { text: k; active: root.kind == i; clicked => { root.kind = i; } }
+            }
+            Text {
+                color: Theme.secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+                text: root.kind == 0 ? "A folder on this computer, or a share your system has already mounted."
+                    : root.kind == 1 ? "A Windows share or NAS, e.g. smb://nas.local/Media or smb://192.168.1.10/Movies."
+                    : "A WebDAV server, e.g. https://nas.local:5006/video.";
+            }
+            Field {
+                label: root.kind == 0 ? "Folder" : "Address";
+                placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : "https://server/path";
+                text <=> root.location;
+            }
+            if root.kind != 0: HorizontalLayout {
+                spacing: 12px;
+                Field { label: "User name"; placeholder: root.kind == 1 ? "guest" : ""; text <=> root.user; }
+                Field { label: "Password"; secret: true; text <=> root.password; }
+            }
+            Field { label: "Name (optional)"; placeholder: "Shown in the sidebar"; text <=> root.name; }
+            if root.status != "": Text { text: root.status; color: root.busy ? Theme.secondary : #ff8f80; font-size: 13px; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                Button { text: "Cancel"; clicked => { root.cancel(); } }
+                Button {
+                    text: root.busy ? "Connecting…" : "Connect";
+                    primary: true;
+                    enabled: !root.busy && root.location != "";
+                    clicked => { root.connect(root.kind, root.name, root.location, root.user, root.password); }
+                }
+            }
+        }
+    }
+}
+
 component Home inherits Rectangle {
     in property <[LibraryEntry]> libraries;
     in property <int> selected;
@@ -599,11 +719,14 @@ component Home inherits Rectangle {
     in property <bool> loading;
     in property <length> bottom-inset;
     in-out property <string> search-text;
+    in property <bool> can-remove;
     callback select(int);
     callback open(string);
     callback sign-out();
     callback search(string);
     callback refresh();
+    callback add-source();
+    callback remove-source();
     background: Theme.bg;
 
     // Phones and narrow windows: no sidebar; search and library chips across the top instead.
@@ -633,6 +756,8 @@ component Home inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
             if root.loading: Text { text: "Loading…"; color: Theme.tertiary; font-size: 12px; vertical-alignment: center; }
             Rectangle { width: 12px; }
+            if root.can-remove && root.selected >= 0: VerticalLayout { alignment: center; IconButton { icon: "trash"; size: 32px; icon-size: 15px; clicked => { root.remove-source(); } } }
+            if root.can-remove && root.selected >= 0: Rectangle { width: 8px; }
             VerticalLayout { alignment: center; IconButton { icon: "refresh"; size: 32px; icon-size: 16px; clicked => { root.refresh(); } } }
             if root.compact: Rectangle { width: 8px; }
             if root.compact: VerticalLayout { alignment: center; IconButton { icon: "signout"; size: 32px; icon-size: 15px; clicked => { root.sign-out(); } } }
@@ -657,6 +782,7 @@ component Home inherits Rectangle {
                 spacing: 8px;
                 Chip { text: "Home"; active: root.selected == -1; clicked => { root.select(-1); } }
                 for lib[i] in root.libraries: Chip { text: lib.title; active: root.selected == i; clicked => { root.select(i); } }
+                Chip { text: "+ Source"; clicked => { root.add-source(); } }
             }
         }
     }
@@ -766,6 +892,7 @@ component Home inherits Rectangle {
         select(i) => { root.select(i); }
         sign-out => { root.sign-out(); }
         search(q) => { root.search(q); }
+        add-source => { root.add-source(); }
     }
 }
 
@@ -1577,6 +1704,12 @@ export component AppWindow inherits Window {
     callback select-library(int);
     callback open-item(string);
     callback sign-out();
+    in property <bool> grid-can-remove;
+    in-out property <bool> add-source-open;
+    in property <bool> add-source-busy;
+    in-out property <string> add-source-status;
+    callback add-source(int, string, string, string, string);
+    callback remove-source();
     callback search(string);
     callback refresh();
 
@@ -1699,6 +1832,9 @@ export component AppWindow inherits Window {
         sign-out => { root.sign-out(); }
         search(q) => { root.search(q); }
         refresh => { root.refresh(); }
+        can-remove: root.grid-can-remove;
+        add-source => { root.add-source-status = ""; root.add-source-open = true; }
+        remove-source => { root.remove-source(); }
     }
     if root.screen == "detail": Detail {
         y: root.inset-top;
@@ -1757,6 +1893,15 @@ export component AppWindow inherits Window {
         prev => { root.music-prev(); }
         close => { root.music-close(); }
         seek-to(t) => { root.music-seek-to(t); }
+    }
+
+    if root.add-source-open: AddSourceDialog {
+        y: root.inset-top;
+        height: root.height - root.inset-top - root.inset-bottom;
+        busy: root.add-source-busy;
+        status: root.add-source-status;
+        connect(k, n, l, u, p) => { root.add-source(k, n, l, u, p); }
+        cancel => { root.add-source-open = false; }
     }
 
     if root.toast != "": Rectangle {
