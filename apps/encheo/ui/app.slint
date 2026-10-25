@@ -112,6 +112,12 @@ export global PlayerState {
     in-out property <float> speed: 1.0;
     in-out property <string> list-title;
     in-out property <[ListEntry]> list-items;
+    // Online subtitle search (Plex / Jellyfin / Emby).
+    in-out property <bool> can-find-subs;
+    in-out property <string> sub-search-status;
+    in-out property <[ListEntry]> sub-langs;      // id = language code
+    in-out property <[ListEntry]> sub-results;    // id = "sub:<key>"
+    callback find-subs(string);
     callback toggle-pause();
     callback seek-to(float);
     callback scrub-to(float);              // while dragging: fast, keyframe seek
@@ -1682,6 +1688,7 @@ component Player inherits Rectangle {
                 for t in PlayerState.audio-tracks: PanelRow { text: t.label; checked: t.selected; clicked => { PlayerState.select-audio(t.id); } }
                 PanelHeading { text: "SUBTITLES"; }
                 PanelRow { text: "Off"; checked: PlayerState.sub-off; clicked => { PlayerState.select-sub(-1); } }
+                if PlayerState.can-find-subs: PanelRow { text: "Find subtitles online…"; clicked => { PlayerState.open-panel("subsearch"); } }
                 for t in PlayerState.sub-tracks: PanelRow { text: t.label; checked: t.selected; clicked => { PlayerState.select-sub(t.id); } }
                 PanelHeading { text: "SPEED"; }
                 HorizontalLayout {
@@ -1731,6 +1738,48 @@ component Player inherits Rectangle {
                         clicked => { PlayerState.pick(e.id); }
                     }
                     if PlayerState.list-items.length == 0: Text { text: "Nothing to show"; color: #ffffff80; font-size: 13px; }
+                }
+            }
+        }
+    }
+
+    // Online subtitle search.
+    if PlayerState.panel == "subsearch": Rectangle {
+        width: Math.min(420px, root.width - 32px);
+        x: root.width - self.width - 16px;
+        y: 60px;
+        height: root.height - 60px - 132px;
+        border-radius: 14px;
+        background: #1f1f21f2;
+        border-width: 1px;
+        border-color: #ffffff1c;
+        TouchArea { }
+        VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+            PanelHeading { text: "FIND SUBTITLES"; height: 22px; }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                for l in PlayerState.sub-langs: Rectangle {
+                    height: 28px;
+                    width: lt.preferred-width + 20px;
+                    border-radius: 14px;
+                    background: l.current ? Theme.accent : lta.has-hover ? #ffffff1c : #ffffff10;
+                    lt := Text { text: l.title; color: l.current ? Theme.accent-text : white; font-size: 12px; font-weight: 600; }
+                    lta := TouchArea { mouse-cursor: pointer; clicked => { PlayerState.find-subs(l.id); } }
+                }
+            }
+            if PlayerState.sub-search-status != "": Text { text: PlayerState.sub-search-status; color: #ffffff90; font-size: 12px; wrap: word-wrap; }
+            Flickable {
+                content-height: found.preferred-height;
+                found := VerticalLayout {
+                    for e in PlayerState.sub-results: PanelRow {
+                        text: e.title;
+                        detail: e.detail;
+                        checked: e.current;
+                        clicked => { PlayerState.pick(e.id); }
+                    }
                 }
             }
         }

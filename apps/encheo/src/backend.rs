@@ -185,6 +185,57 @@ impl Backend {
         }
     }
 
+    /// Online subtitles for an item: (key, title, detail). `lang` is the account's language as
+    /// ISO 639-3 ("eng").
+    pub async fn search_subtitles(&self, id: &str, lang: &str) -> R<Vec<(String, String, String)>> {
+        match self {
+            Backend::Plex(s) => {
+                let two = crate::langs::to_iso639_1(lang);
+                let found = s.search_subtitles(id, &two).await.map_err(|e| e.to_string())?;
+                Ok(found
+                    .into_iter()
+                    .map(|r| {
+                        let detail = format!(
+                            "{} · {} · match {}",
+                            r.language.unwrap_or_default(),
+                            r.provider_title.unwrap_or_default(),
+                            r.score
+                        );
+                        (r.key, r.title.unwrap_or_else(|| "Subtitle".into()), detail)
+                    })
+                    .collect())
+            }
+            Backend::Jf(s) => {
+                let three = crate::langs::to_iso639_2b(lang);
+                let found = s.search_subtitles(id, &three).await.map_err(|e| {
+                    let t = e.to_string();
+                    if t.contains("404") { "this server has no subtitle plugin installed".to_string() } else { t }
+                })?;
+                Ok(found.into_iter().map(|(k, label)| (k, label, String::new())).collect())
+            }
+        }
+    }
+
+    /// Save a found subtitle on the server; returns a URL to show it right away, if there is one.
+    pub async fn pick_subtitle(&self, id: &str, key: &str) -> R<Option<String>> {
+        match self {
+            Backend::Plex(s) => {
+                s.pick_subtitle(id, key).await.map_err(|e| e.to_string())?;
+                Ok(Some(s.subtitle_result_url(key)))
+            }
+            Backend::Jf(s) => {
+                s.pick_subtitle(id, key).await.map_err(|e| e.to_string())?;
+                // The new file shows up as the item's newest external subtitle.
+                let item = s.metadata(id).await.map_err(|e| e.to_string())?;
+                let url = item
+                    .and_then(|i| i.primary_part().cloned())
+                    .and_then(|p| p.streams.into_iter().filter(|st| st.stream_type == 3 && st.key.is_some()).last())
+                    .and_then(|st| s.subtitle_url(&st));
+                Ok(url)
+            }
+        }
+    }
+
     /// Plex only: remember the audio/subtitle track for a file.
     pub async fn set_streams(&self, part: u64, audio: Option<u64>, subtitle: Option<u64>) -> R<()> {
         match self {

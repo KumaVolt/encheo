@@ -195,6 +195,34 @@ fn string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D:
     })
 }
 
+/// A subtitle Plex found online (OpenSubtitles) for an item.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleResult {
+    /// Pass to [`Server::pick_subtitle`](crate::Server::pick_subtitle).
+    pub key: String,
+    #[serde(default)]
+    pub codec: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Usually the release name the subtitle was made for.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub provider_title: Option<String>,
+    /// Higher is a better match (Plex sends it as a string).
+    #[serde(default, deserialize_with = "string_or_number")]
+    pub score: String,
+    #[serde(default)]
+    pub hearing_impaired: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct SubtitleResults {
+    #[serde(default, rename = "Stream")]
+    pub streams: Vec<SubtitleResult>,
+}
+
 /// A page of a library or list.
 #[derive(Clone, Debug)]
 pub struct Page {

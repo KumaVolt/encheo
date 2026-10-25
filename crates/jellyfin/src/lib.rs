@@ -405,6 +405,35 @@ impl Server {
         Ok(())
     }
 
+    /// Online subtitle search (needs a subtitle plugin, e.g. OpenSubtitles, on the server).
+    /// `language` is ISO 639-2 ("eng"). Returns (id, label) pairs, most downloaded first.
+    pub async fn search_subtitles(&self, id: &str, language: &str) -> Result<Vec<(String, String)>> {
+        let v = self.json(self.get(&format!("/Items/{}/RemoteSearch/Subtitles/{language}", self.raw_id(id)))).await?;
+        let mut list: Vec<(i64, String, String)> = v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let sid = r["Id"].as_str()?.to_string();
+                let name = r["Name"].as_str().unwrap_or("Subtitle");
+                let provider = r["ProviderName"].as_str().unwrap_or("");
+                Some((r["DownloadCount"].as_i64().unwrap_or(0), sid, format!("{name} · {provider}")))
+            })
+            .collect();
+        list.sort_by_key(|(n, _, _)| std::cmp::Reverse(*n));
+        Ok(list.into_iter().map(|(_, id, label)| (id, label)).collect())
+    }
+
+    /// Download a found subtitle to the server; it then appears as an external subtitle stream.
+    pub async fn pick_subtitle(&self, id: &str, subtitle_id: &str) -> Result<()> {
+        let sid: String = url::form_urlencoded::byte_serialize(subtitle_id.as_bytes()).collect();
+        let resp = self.send(reqwest::Method::POST, &format!("/Items/{}/RemoteSearch/Subtitles/{sid}", self.raw_id(id))).send().await?;
+        if !resp.status().is_success() {
+            return Err(Error::Status(resp.status().as_u16()));
+        }
+        Ok(())
+    }
+
     /// One play session per item and device, so start, progress and stop line up.
     fn play_session(&self, raw_item: &str) -> String {
         format!("{}-{raw_item}", self.client.device_id)

@@ -253,3 +253,15 @@ async fn watchlist_and_guid_lookup() {
     assert_eq!(server.find_by_guid("plex://movie/66").await.unwrap().unwrap().rating_key, "45028");
     assert!(server.find_by_guid("plex://movie/999").await.unwrap().is_none());
 }
+
+#[test]
+fn subtitle_results_parse() {
+    let json = r#"{"MediaContainer":{"size":2,"Stream":[
+        {"key":"/library/streams/1","codec":"srt","language":"English","title":"Hereditary.2018.WEB","providerTitle":"OpenSubtitles","score":"388"},
+        {"key":"/library/streams/2","codec":"srt","language":"English","title":"Hereditary.2018.BluRay","providerTitle":"OpenSubtitles","score":14296}
+    ]}}"#;
+    let e: Envelope<crate::model::SubtitleResults> = serde_json::from_str(json).unwrap();
+    assert_eq!(e.container.streams.len(), 2);
+    assert_eq!(e.container.streams[1].score, "14296");
+    assert_eq!(e.container.streams[0].provider_title.as_deref(), Some("OpenSubtitles"));
+}

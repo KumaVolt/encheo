@@ -59,6 +59,30 @@ pub fn normalize(code: &str) -> String {
     mapped.to_string()
 }
 
+/// ISO 639-3 (as [`normalize`] gives) back to the two-letter code Plex wants.
+pub fn to_iso639_1(code: &str) -> String {
+    let c = normalize(code);
+    match c.as_str() {
+        "eng" => "en", "nld" => "nl", "fra" => "fr", "deu" => "de", "spa" => "es", "ita" => "it", "por" => "pt",
+        "jpn" => "ja", "kor" => "ko", "cmn" => "zh", "rus" => "ru", "arb" => "ar", "hin" => "hi", "swe" => "sv",
+        "dan" => "da", "nob" => "no", "fin" => "fi", "pol" => "pl", "tur" => "tr", "ces" => "cs", "ell" => "el",
+        "ron" => "ro", "hun" => "hu", "heb" => "he", "ind" => "id", "tha" => "th", "ukr" => "uk", "vie" => "vi",
+        _ => return c.chars().take(2).collect(),
+    }
+    .to_string()
+}
+
+/// ISO 639-3 to the ISO 639-2/B code Jellyfin and Emby use ("nld" → "dut").
+pub fn to_iso639_2b(code: &str) -> String {
+    let c = normalize(code);
+    match c.as_str() {
+        "nld" => "dut", "fra" => "fre", "deu" => "ger", "cmn" => "chi", "ces" => "cze", "ell" => "gre", "ron" => "rum",
+        "zsm" => "may", "arb" => "ara", "nob" => "nor",
+        other => other,
+    }
+    .to_string()
+}
+
 /// A detected language, as stored.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Detected {
@@ -111,6 +135,9 @@ mod tests {
         assert_eq!(normalize("ger"), "deu");
         assert_eq!(normalize("pt-BR"), "por");
         assert_eq!(normalize("chi"), "cmn");
+        assert_eq!(super::to_iso639_1("dut"), "nl");
+        assert_eq!(super::to_iso639_1("eng"), "en");
+        assert_eq!(super::to_iso639_2b("nl"), "dut");
     }
 }
 

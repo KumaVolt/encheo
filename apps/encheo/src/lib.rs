@@ -1146,6 +1146,7 @@ fn play_opts(item: Item, from_start: bool) {
             ps.set_skip_label(SharedString::new());
             ps.set_controls_visible(true);
             ps.set_panel(SharedString::new());
+            ps.set_can_find_subs(true);
             ui.set_screen("player".into());
             p.load(&url, full.view_offset.map(|o| o as f64 / 1000.0));
             // Subtitle files next to the video only reach mpv if we hand them over.
@@ -1359,6 +1360,18 @@ fn open_panel(which: &str) {
     let ps = ps(&ui);
     let Some(p) = player() else { return };
     match which {
+        "subsearch" => {
+            let mine = with_state(|s| s.subtitle_language.clone()).unwrap_or_else(|| "eng".into());
+            let mut langs = vec![(mine.clone(), language_label(&mine))];
+            if mine != "eng" {
+                langs.push(("eng".into(), "English".into()));
+            }
+            ps.set_sub_langs(ModelRc::new(VecModel::from(
+                langs.into_iter().map(|(id, title)| ListEntry { id: id.into(), title: title.into(), detail: SharedString::new(), current: false }).collect::<Vec<_>>(),
+            )));
+            ps.set_panel(which.into());
+            return find_subtitles(mine);
+        }
         "settings" => fill_tracks(&ui),
         "list" => {
             let entries: Vec<ListEntry> = if is_episode() {
@@ -1696,7 +1709,82 @@ fn fill_tracks(ui: &AppWindow) {
     ps.set_sub_tracks(ModelRc::new(VecModel::from(to_options(subs, StreamKind::Subtitle))));
 }
 
+fn language_label(code: &str) -> String {
+    match langs::normalize(code).as_str() {
+        "eng" => "English", "nld" => "Dutch", "fra" => "French", "deu" => "German", "spa" => "Spanish",
+        "ita" => "Italian", "por" => "Portuguese", "jpn" => "Japanese", "kor" => "Korean", "cmn" => "Chinese",
+        "swe" => "Swedish", "dan" => "Danish", "nob" => "Norwegian", "fin" => "Finnish", "pol" => "Polish",
+        "tur" => "Turkish", "rus" => "Russian", "arb" => "Arabic",
+        other => return other.to_uppercase(),
+    }
+    .into()
+}
+
+/// Ask the playing item's server for subtitles in a language.
+fn find_subtitles(lang: String) {
+    let ui = ui();
+    let ps = ps(&ui);
+    let Some(item) = with_state(|s| s.now_playing.as_ref().map(|n| n.item.clone())) else { return };
+    let Some(server) = backend_for(&item.rating_key) else { return };
+    let langs: Vec<ListEntry> = ps.get_sub_langs().iter().map(|mut l| { l.current = l.id == lang.as_str(); l }).collect();
+    ps.set_sub_langs(ModelRc::new(VecModel::from(langs)));
+    ps.set_sub_results(ModelRc::new(VecModel::from(Vec::<ListEntry>::new())));
+    ps.set_sub_search_status(format!("Searching {}…", language_label(&lang)).into());
+    rt().spawn(async move {
+        let found = server.search_subtitles(&item.rating_key, &lang).await;
+        on_ui(move |ui| {
+            let ps = crate::ps(ui);
+            match found {
+                Ok(list) if list.is_empty() => ps.set_sub_search_status("Nothing found.".into()),
+                Ok(list) => {
+                    ps.set_sub_search_status(SharedString::new());
+                    let rows: Vec<ListEntry> = list
+                        .into_iter()
+                        .map(|(key, title, detail)| ListEntry { id: format!("sub:{key}").into(), title: title.into(), detail: detail.into(), current: false })
+                        .collect();
+                    ps.set_sub_results(ModelRc::new(VecModel::from(rows)));
+                }
+                Err(e) => ps.set_sub_search_status(format!("Couldn't search: {e}").into()),
+            }
+        });
+    });
+}
+
+/// Save the chosen online subtitle on the server and switch to it.
+fn pick_online_subtitle(key: String) {
+    let ui = ui();
+    let ps = ps(&ui);
+    let Some(item) = with_state(|s| s.now_playing.as_ref().map(|n| n.item.clone())) else { return };
+    let Some(server) = backend_for(&item.rating_key) else { return };
+    ps.set_sub_search_status("Downloading…".into());
+    rt().spawn(async move {
+        let result = server.pick_subtitle(&item.rating_key, &key).await;
+        on_ui(move |ui| {
+            let ps = crate::ps(ui);
+            match result {
+                Ok(Some(url)) => {
+                    if let Some(p) = player() {
+                        p.add_subtitle_selected(&url, "Downloaded");
+                    }
+                    with_state(|s| {
+                        if let Some(np) = s.now_playing.as_mut() {
+                            np.user_picked_sub = true;
+                        }
+                    });
+                    ps.set_sub_search_status(SharedString::new());
+                    ps.set_panel(SharedString::new());
+                }
+                Ok(None) => ps.set_sub_search_status("Saved on the server; it shows up next time you play this.".into()),
+                Err(e) => ps.set_sub_search_status(format!("Couldn't download it: {e}").into()),
+            }
+        });
+    });
+}
+
 fn pick(id: String) {
+    if let Some(key) = id.strip_prefix("sub:") {
+        return pick_online_subtitle(key.to_string());
+    }
     if let Some(start) = id.strip_prefix("chapter:") {
         if let (Some(p), Ok(t)) = (player(), start.parse::<f64>()) {
             p.seek_to(t);
@@ -2617,6 +2705,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             }
         });
         ps.on_pick(|id| pick(id.to_string()));
+        ps.on_find_subs(|lang| find_subtitles(lang.to_string()));
     }
     ui.on_play_track(|id| {
         let (tracks, idx) = with_state(|s| {

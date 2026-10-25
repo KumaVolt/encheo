@@ -272,6 +272,7 @@ fn play_file(index: usize, path: &str) {
             ps.set_skip_label(SharedString::new());
             ps.set_controls_visible(true);
             ps.set_panel(SharedString::new());
+            ps.set_can_find_subs(false);
             ui.set_screen("player".into());
             let start = resume.fraction().map(|_| resume.position);
             match target {

@@ -175,6 +175,33 @@ impl Server {
         Ok(())
     }
 
+    /// Search online subtitles (Plex's OpenSubtitles integration) in a language (ISO 639-1, e.g.
+    /// "en"). Best matches first.
+    pub async fn search_subtitles(&self, rating_key: &str, language: &str) -> Result<Vec<crate::SubtitleResult>> {
+        let lang: String = url::form_urlencoded::byte_serialize(language.as_bytes()).collect();
+        let r = self.get(&format!("/library/metadata/{rating_key}/subtitles?language={lang}&hearingImpaired=0&forced=0")).timeout(std::time::Duration::from_secs(60));
+        let e: Envelope<crate::model::SubtitleResults> = Plex::json(r).await?;
+        let mut v = e.container.streams;
+        v.sort_by_key(|s| std::cmp::Reverse(s.score.parse::<i64>().unwrap_or(0)));
+        Ok(v)
+    }
+
+    /// Download a found subtitle to the server and make it the item's subtitle, for every Plex app.
+    pub async fn pick_subtitle(&self, rating_key: &str, key: &str) -> Result<()> {
+        let k: String = url::form_urlencoded::byte_serialize(key.as_bytes()).collect();
+        let url = format!("{}/library/metadata/{rating_key}/subtitles?key={k}&hearingImpaired=0&forced=0", self.base);
+        let resp = self.plex.request(Method::PUT, &url, Some(&self.token)).send().await?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Status { status: resp.status().as_u16(), url: crate::strip_token(resp.url().as_str()) });
+        }
+        Ok(())
+    }
+
+    /// URL of a found subtitle's text, to show it right away.
+    pub fn subtitle_result_url(&self, key: &str) -> String {
+        format!("{}{key}?X-Plex-Token={}", self.base, self.token)
+    }
+
     pub async fn mark_watched(&self, rating_key: &str) -> Result<()> {
         self.send_ok(&format!("/:/scrobble?key={rating_key}&identifier={LIBRARY_ID}")).await
     }

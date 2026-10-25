@@ -354,6 +354,11 @@ impl Player {
         let _ = self.mpv.command("sub-add", &[url, "auto", title]);
     }
 
+    /// Load a subtitle file and switch to it.
+    pub fn add_subtitle_selected(&self, url: &str, title: &str) {
+        let _ = self.mpv.command("sub-add", &[url, "select", title]);
+    }
+
     pub fn chapters(&self) -> Vec<Chapter> {
         let count = self.mpv.get_property::<i64>("chapter-list/count").unwrap_or(0);
         (0..count)
