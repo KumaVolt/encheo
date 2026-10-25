@@ -76,6 +76,8 @@ All decoding and rendering is libmpv, so format coverage is FFmpeg's.
 | Feature | Status | Notes |
 |---|---|---|
 | macOS, Windows, Linux, Android phone, Android TV | ◐ | All build in CI; macOS and Android tested; Windows and Linux untested |
+| iPhone, iPad | ◐ | Experimental: unsigned .ipa for sideloading; video via mpv on Metal (MoltenVK), tested in the simulator only. App Store needs libsmbclient dropped and the LGPL relinking terms met |
+| Apple TV | ✗ | Slint doesn't support tvOS |
 | Profiles with passcode | → | |
 | Trakt scrobbling and sync | → | |
 | Sync of settings, history, favourites, home layout and sources across devices | → | Optional; source passwords end-to-end encrypted |
