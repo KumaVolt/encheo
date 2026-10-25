@@ -21,6 +21,8 @@ fn main() {
     let kind = match a[0].as_str() {
         "local" => Kind::Local,
         "webdav" => Kind::WebDav,
+        "sftp" => Kind::Sftp,
+        "ftp" => Kind::Ftp,
         _ => Kind::Smb,
     };
     let config = Config {
@@ -29,6 +31,7 @@ fn main() {
         location: a[1].clone(),
         username: a.get(2).cloned().unwrap_or_default(),
         password: a.get(3).cloned().unwrap_or_default(),
+        host_key: None,
     };
     let t = std::time::Instant::now();
     let src = Source::connect(&config).expect("connect");

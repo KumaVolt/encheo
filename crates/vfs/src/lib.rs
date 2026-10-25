@@ -6,8 +6,10 @@
 //!
 //! The API is blocking; call it from a worker thread.
 
+mod ftp;
 mod local;
 pub mod names;
+mod sftp;
 mod smb;
 mod webdav;
 
@@ -36,6 +38,8 @@ pub enum Kind {
     Local,
     WebDav,
     Smb,
+    Sftp,
+    Ftp,
 }
 
 impl Kind {
@@ -44,6 +48,8 @@ impl Kind {
             Kind::Local => "Folder",
             Kind::WebDav => "WebDAV",
             Kind::Smb => "SMB",
+            Kind::Sftp => "SFTP",
+            Kind::Ftp => "FTP",
         }
     }
 }
@@ -60,6 +66,9 @@ pub struct Config {
     pub username: String,
     #[serde(default)]
     pub password: String,
+    /// SFTP: the server's host key fingerprint, pinned on first connect.
+    #[serde(default)]
+    pub host_key: Option<String>,
 }
 
 /// A folder or file in a listing.
@@ -122,6 +131,8 @@ pub enum Source {
     Local(local::Local),
     WebDav(webdav::WebDav),
     Smb(smb::Smb),
+    Sftp(sftp::Sftp),
+    Ftp(ftp::Ftp),
 }
 
 impl Source {
@@ -131,6 +142,8 @@ impl Source {
             Kind::Local => Source::Local(local::Local::new(&config.location)?),
             Kind::WebDav => Source::WebDav(webdav::WebDav::new(config)?),
             Kind::Smb => Source::Smb(smb::Smb::connect(config)?),
+            Kind::Sftp => Source::Sftp(sftp::Sftp::connect(config)?),
+            Kind::Ftp => Source::Ftp(ftp::Ftp::connect(config)?),
         };
         source.list("")?;
         Ok(source)
@@ -142,6 +155,8 @@ impl Source {
             Source::Local(s) => s.list(path)?,
             Source::WebDav(s) => s.list(path)?,
             Source::Smb(s) => s.list(path)?,
+            Source::Sftp(s) => s.list(path)?,
+            Source::Ftp(s) => s.list(path)?,
         };
         entries.retain(|e| !e.name.starts_with('.') && (e.is_dir || e.media_kind().is_some()));
         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| names::natural_cmp(&a.name, &b.name)));
@@ -154,6 +169,8 @@ impl Source {
             Source::Local(s) => s.list(path),
             Source::WebDav(s) => s.list(path),
             Source::Smb(s) => s.list(path),
+            Source::Sftp(s) => s.list(path),
+            Source::Ftp(s) => s.list(path),
         }
     }
 
@@ -162,6 +179,8 @@ impl Source {
             Source::Local(s) => s.open(path),
             Source::WebDav(s) => s.open(path),
             Source::Smb(s) => s.open(path),
+            Source::Sftp(s) => s.open(path),
+            Source::Ftp(s) => s.open(path),
         }
     }
 
@@ -170,9 +189,50 @@ impl Source {
         match self {
             Source::Local(s) => Some(s.direct_url(path)),
             Source::WebDav(s) => Some(s.direct_url(path)),
-            Source::Smb(_) => None,
+            Source::Smb(_) | Source::Sftp(_) | Source::Ftp(_) => None,
         }
     }
+
+    /// SFTP: the host key fingerprint seen on connect, to pin in the config.
+    pub fn host_key(&self) -> Option<String> {
+        match self {
+            Source::Sftp(s) => Some(s.fingerprint.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A shared runtime for the async clients (SMB, SFTP), so the blocking API and mpv's reader
+/// threads can drive them.
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("vfs").build().expect("vfs runtime"))
+}
+
+/// Percent-decode a URL path.
+pub(crate) fn webdav_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// TLS settings for FTPS: Mozilla's roots, so it behaves the same on every platform.
+pub(crate) fn tls_config() -> suppaftp::rustls::ClientConfig {
+    let mut roots = suppaftp::rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    suppaftp::rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()
 }
 
 /// Join a folder path and a name.
@@ -208,6 +268,7 @@ mod tests {
             location: dir.to_string_lossy().into(),
             username: String::new(),
             password: String::new(),
+            host_key: None,
         })
         .unwrap();
         let names: Vec<_> = src.list("").unwrap().into_iter().map(|e| e.name).collect();

@@ -10,8 +10,12 @@ base64 = "0.23.1"
 encheo-plex = { version = "0.1.0", path = "../plex" }
 quick-xml = "0.42.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
+russh = "0.64.1"
+russh-sftp = "3.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
 smb2 = "0.35.0"
+suppaftp = { version = "12.2.1", features = ["rustls-ring"] }
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1.54.1", features = ["io-util", "rt-multi-thread", "sync"] }
 url = "2.5.8"
+webpki-roots = "1.0.11"

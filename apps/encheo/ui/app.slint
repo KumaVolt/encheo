@@ -726,7 +726,7 @@ component AddSourceDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
-                for k[i] in ["Folder", "SMB", "WebDAV", "Jellyfin / Emby"]: Chip { text: k; active: root.kind == i; clicked => { root.kind = i; } }
+                for k[i] in ["Folder", "SMB", "WebDAV", "Jellyfin/Emby", "SFTP", "FTP"]: Chip { text: k; active: root.kind == i; clicked => { root.kind = i; } }
             }
             Text {
                 color: Theme.secondary;
@@ -735,11 +735,14 @@ component AddSourceDialog inherits Rectangle {
                 text: root.kind == 0 ? "A folder on this computer, or a share your system has already mounted."
                     : root.kind == 1 ? "A Windows share or NAS, e.g. smb://nas.local/Media or smb://192.168.1.10/Movies."
                     : root.kind == 2 ? "A WebDAV server, e.g. https://nas.local:5006/video."
-                    : "A Jellyfin or Emby server, e.g. http://192.168.1.10:8096. Your libraries appear in the sidebar.";
+                    : root.kind == 3 ? "A Jellyfin or Emby server, e.g. http://192.168.1.10:8096. Your libraries appear in the sidebar."
+                    : root.kind == 4 ? "A server you can reach over SSH, e.g. sftp://nas.local/volume1/video."
+                    : "An FTP server, e.g. ftp://nas.local/video (ftps:// for encrypted).";
             }
             Field {
                 label: root.kind == 0 ? "Folder" : "Address";
-                placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : root.kind == 2 ? "https://server/path" : "http://server:8096";
+                placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : root.kind == 2 ? "https://server/path"
+                    : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : "ftp://server/path";
                 text <=> root.location;
             }
             if root.kind != 0: HorizontalLayout {

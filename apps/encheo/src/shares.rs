@@ -367,11 +367,13 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
     let kind = match kind {
         0 => Kind::Local,
         1 => Kind::Smb,
+        4 => Kind::Sftp,
+        5 => Kind::Ftp,
         _ => Kind::WebDav,
     };
     let location = location.trim().to_string();
     let name = if name.trim().is_empty() { default_name(kind, &location) } else { name.trim().to_string() };
-    let config = Config { kind, name, location, username: username.trim().to_string(), password };
+    let config = Config { kind, name, location, username: username.trim().to_string(), password, host_key: None };
     let ui = ui();
     ui.set_add_source_busy(true);
     ui.set_add_source_status("Connecting…".into());
@@ -380,7 +382,9 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
         on_ui(move |ui| {
             ui.set_add_source_busy(false);
             match result {
-                Ok(_) => {
+                Ok(source) => {
+                    let mut config = config;
+                    config.host_key = source.host_key(); // SFTP: pin the server's key
                     ui.set_add_source_open(false);
                     ui.set_add_source_status(SharedString::new());
                     let index = with_state(|s| {

@@ -1,19 +1,10 @@
 //! SMB2/3 (Windows shares, NAS boxes) with the pure-Rust `smb2` client. Files are read with
 //! positioned reads, which is exactly what seeking in a video needs.
 
-use crate::{Config, Entry, Error, ReadSeek, Result};
+use crate::{Config, Entry, Error, ReadSeek, Result, runtime};
 use smb2::{SmbClient, Tree};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
-
-/// The client is async; a small runtime of our own lets the blocking API (and mpv's reader
-/// threads) drive it.
-fn runtime() -> &'static tokio::runtime::Runtime {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("smb").build().expect("smb runtime")
-    })
-}
 
 pub struct Smb {
     client: Mutex<SmbClient>,

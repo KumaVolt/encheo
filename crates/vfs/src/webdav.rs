@@ -281,6 +281,7 @@ mod tests {
             location: "https://nas.local/dav".into(),
             username: "me".into(),
             password: "pw".into(),
+            host_key: None,
         })
         .unwrap();
         let d = dav.direct_url("Movies/Heat (1995).mkv");
