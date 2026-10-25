@@ -45,6 +45,13 @@ const OPTIONS: &[(&str, &str)] = &[
     ("target-colorspace-hint", "yes"),
 ];
 
+/// iOS: no OpenGL under the UI; mpv draws into its own Metal layer (see ios_video.rs), through
+/// Vulkan on MoltenVK, decoding with VideoToolbox. Later entries override OPTIONS.
+#[cfg(target_os = "ios")]
+const PLATFORM_OPTIONS: &[(&str, &str)] = &[("vo", "gpu-next"), ("gpu-api", "vulkan"), ("gpu-context", "moltenvk"), ("hwdec", "videotoolbox")];
+#[cfg(not(target_os = "ios"))]
+const PLATFORM_OPTIONS: &[(&str, &str)] = &[];
+
 /// File sources mpv can read through `encheo://<source>/<path>`, by source number.
 pub static STREAM_SOURCES: std::sync::Mutex<Vec<Option<std::sync::Arc<encheo_vfs::Source>>>> = std::sync::Mutex::new(Vec::new());
 
@@ -133,7 +140,11 @@ impl Player {
         let mpv = Mpv::with_initializer(|init| {
             // Builds differ in what they support (the Android libmpv lacks some options), so an
             // unknown option is logged and skipped rather than stopping the player.
-            for (name, value) in OPTIONS {
+            // Development: ENCHEO_MPV_LOG=<file> writes mpv's own log.
+            if let Ok(path) = std::env::var("ENCHEO_MPV_LOG") {
+                let _ = init.set_option("log-file", path.as_str());
+            }
+            for (name, value) in OPTIONS.iter().chain(PLATFORM_OPTIONS) {
                 if let Err(e) = init.set_option(name, *value) {
                     eprintln!("mpv option {name}={value}: {e}");
                 }
@@ -203,6 +214,14 @@ impl Player {
             eprintln!("mpv render: {e}");
         }
         unsafe { saved.restore(gl) };
+    }
+
+    /// iOS: the Metal layer mpv draws into (must be set before the first video loads).
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub fn set_wid(&self, wid: i64) {
+        if let Err(e) = self.mpv.set_property("wid", wid) {
+            eprintln!("mpv wid: {e}");
+        }
     }
 
     pub fn teardown(&self) {

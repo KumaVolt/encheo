@@ -28,7 +28,7 @@ xcrun simctl boot "$udid" 2>/dev/null || true
 xcrun simctl bootstatus "$udid" >/dev/null
 xcrun simctl install "$udid" "$app"
 xcrun simctl terminate "$udid" app.encheo 2>/dev/null || true
-xcrun simctl launch "$udid" app.encheo
+SIMCTL_CHILD_ENCHEO_PLAY="${PLAY:-}" xcrun simctl launch "$udid" app.encheo
 sleep "${WAIT:-6}"
 xcrun simctl io "$udid" screenshot target/ios/screen.png >/dev/null
 echo "screenshot: target/ios/screen.png"

@@ -79,7 +79,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p encheo
-      # iOS: compile check only (no playback yet, not signed).
+      # iOS: compile check only (not signed yet). libmpv from MPVKit, cached.
+      - uses: actions/cache@v4
+        with:
+          path: apps/encheo/ios-libs
+          key: ios-libs-${{ hashFiles('scripts/ios-libs.sh') }}
+      - run: scripts/ios-libs.sh && rm -rf apps/encheo/ios-libs/zips
       - run: rustup target add aarch64-apple-ios && cargo build --locked -p encheo --bin encheo --target aarch64-apple-ios
       - name: Package
         run: |

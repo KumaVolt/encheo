@@ -20,6 +20,7 @@ encheo-plex = { version = "0.2.0", path = "../../crates/plex" }
 encheo-sublang = { version = "0.2.0", path = "../../crates/sublang" }
 encheo-vfs = { version = "0.2.0", path = "../../crates/vfs" }
 glow = "0.18.0"
+libmpv2 = "6.0.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -27,9 +28,6 @@ serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 uuid = { version = "1.29.0", features = ["v4"] }
 
-# Not on iOS yet (see src/player_ios.rs).
-[target.'cfg(not(target_os = "ios"))'.dependencies]
-libmpv2 = "6.0.0"
 
 # Desktop: winit windows, OpenGL rendering (femtovg).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
@@ -44,6 +42,12 @@ slint = { version = "1.18", default-features = false, features = ["std", "backen
 [target.'cfg(target_os = "ios")'.dependencies]
 open = "5.4.5"
 slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2", "unstable-winit-030"] }
+# The video view behind the UI.
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", features = ["NSGeometry"] }
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAMetalLayer"] }
+objc2-ui-kit = { version = "0.3.2", features = ["UIView", "UIResponder", "UIColor", "UIScreen", "UIWindow"] }
+raw-window-handle = "0.6.2"
 
 [build-dependencies]
 slint-build = "1.18"

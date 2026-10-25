@@ -9,8 +9,9 @@ mod images;
 mod langs;
 mod progress;
 mod shares;
-#[cfg_attr(target_os = "ios", path = "player_ios.rs")]
 mod player;
+#[cfg(target_os = "ios")]
+mod ios_video;
 mod session;
 
 use encheo_plex::{ClientInfo, Item, ItemKind, MarkerKind, PlayState, Plex, Server, Stream, StreamKind};
@@ -1344,6 +1345,8 @@ fn stop_playback() {
 fn tick() {
     let ui = ui();
     fit_tv_scale(&ui);
+    #[cfg(target_os = "ios")]
+    ios_video::follow_size();
     if ui.get_screen() != "player" {
         return music_tick(&ui);
     }
@@ -2694,6 +2697,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             let Some(p) = player() else { return };
             match state {
                 slint::RenderingState::RenderingSetup => {
+
                     if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = api {
                         let w = weak.clone();
                         p.setup_gl(*get_proc_address, move || {
@@ -2909,6 +2913,29 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // Android TV pops the keyboard up as the window gets focus; close it once that has happened.
     for ms in [400, 1500] {
         slint::Timer::single_shot(Duration::from_millis(ms), hide_keyboard);
+    }
+    // Development: ENCHEO_PLAY=<url> plays a URL right after start (simulators and emulators,
+    // where nothing can be clicked from scripts).
+    if let Ok(url) = std::env::var("ENCHEO_PLAY") {
+        slint::Timer::single_shot(Duration::from_secs(2), move || {
+            if let Some(p) = player() {
+                crate::ui().set_screen("player".into());
+                p.load(&url, None);
+            }
+        });
+    }
+    // iOS: give mpv its video layer once the window (and its view) exists.
+    #[cfg(target_os = "ios")]
+    {
+        let timer = Box::leak(Box::new(slint::Timer::default()));
+        timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), || {
+            if ios_video::attached() {
+                return;
+            }
+            if let (Some(p), Some(wid)) = (player(), ios_video::attach(crate::ui().window())) {
+                p.set_wid(wid);
+            }
+        });
     }
     ui.run()
 }
