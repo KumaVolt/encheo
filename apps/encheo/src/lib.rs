@@ -1999,8 +1999,10 @@ fn search(query: String) {
                     Err(e) => errors.push(e),
                 }
             }
+            let q = query.clone();
+            let files = tokio::task::spawn_blocking(move || shares::search_files(&q)).await.unwrap_or_default();
             let results: Result<Vec<Item>, String> =
-                if found.is_empty() && !errors.is_empty() { Err(errors.join("; ")) } else { Ok(found) };
+                if found.is_empty() && files.is_empty() && !errors.is_empty() { Err(errors.join("; ")) } else { Ok(found) };
             on_ui(move |ui| {
                 if with_state(|s| s.search_generation) != generation {
                     return;
@@ -2008,8 +2010,14 @@ fn search(query: String) {
                 ui.set_loading(false);
                 match results {
                     Ok(items) => {
-                        let posters: Vec<Poster> = items.iter().map(|i| poster(i, false)).collect();
+                        let mut posters: Vec<Poster> = items.iter().map(|i| poster(i, false)).collect();
                         remember(items);
+                        let progress = with_state(|s| s.progress.get_or_insert_with(progress::Store::load).clone());
+                        posters.extend(files.iter().map(|(item, name)| shares::file_poster(item, name, &progress)));
+                        remember(files.into_iter().map(|(item, _)| item).collect::<Vec<_>>());
+                        if posters.is_empty() {
+                            toast(ui, "Nothing found.");
+                        }
                         with_models(|m| m.grid.set_vec(posters));
                     }
                     Err(e) => toast(ui, format!("Search failed: {e}")),
@@ -2025,7 +2033,10 @@ fn refresh() {
     }
     let ui = ui();
     match ui.get_selected_library() {
-        -2 => search(ui.get_search_text().to_string()),
+        -2 => {
+            shares::forget_index();
+            search(ui.get_search_text().to_string())
+        }
         i => select_library(i),
     }
 }

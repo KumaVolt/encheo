@@ -71,6 +71,7 @@ pub(crate) fn sync_configs() {
     if let Ok(mut v) = player::STREAM_SOURCES.lock() {
         v.clear();
     }
+    forget_index();
 }
 
 /// Show a folder of a source in the library grid.
@@ -111,17 +112,7 @@ pub(crate) fn browse(index: usize, path: String) {
                     posters.push(folder_poster(index, &e.path, &e.name, "icon:folder"));
                 } else {
                     let item = file_item(index, &e.path, &e.name, e.size);
-                    let p = progress.get(&item.rating_key);
-                    posters.push(Poster {
-                        id: item.rating_key.clone().into(),
-                        title: display_title(&item).into(),
-                        subtitle: e.name.clone().into(),
-                        art_url: if item.kind == ItemKind::Track { "icon:music" } else { "icon:film" }.into(),
-                        image: Image::default(),
-                        progress: p.fraction().unwrap_or(0.0),
-                        watched: p.watched,
-                        square: false,
-                    });
+                    posters.push(file_poster(&item, &e.name, &progress));
                     items.push(item);
                 }
             }
@@ -171,6 +162,112 @@ fn file_item(index: usize, path: &str, name: &str, size: Option<u64>) -> Item {
         },
     }
     item
+}
+
+pub(crate) fn file_poster(item: &Item, file_name: &str, progress: &progress::Store) -> Poster {
+    let p = progress.get(&item.rating_key);
+    Poster {
+        id: item.rating_key.clone().into(),
+        title: display_title(item).into(),
+        subtitle: file_name.into(),
+        art_url: if item.kind == ItemKind::Track { "icon:music" } else { "icon:film" }.into(),
+        image: Image::default(),
+        progress: p.fraction().unwrap_or(0.0),
+        watched: p.watched,
+        square: false,
+    }
+}
+
+// ---------- Search ----------
+
+/// Every media file of a source, collected the first time it's searched (the walk can take a while
+/// on a big NAS) and kept until Refresh or a settings change.
+type FileIndex = Arc<Vec<encheo_vfs::Entry>>;
+static INDEX: std::sync::Mutex<Vec<Arc<std::sync::Mutex<Option<FileIndex>>>>> = std::sync::Mutex::new(Vec::new());
+
+/// Upper bounds for one walk, so a huge or looping share can't hang search.
+const MAX_FOLDERS: usize = 3000;
+const MAX_DEPTH: usize = 12;
+
+pub(crate) fn forget_index() {
+    if let Ok(mut v) = INDEX.lock() {
+        v.clear();
+    }
+}
+
+fn file_index(index: usize) -> Result<FileIndex, String> {
+    let slot = {
+        let mut v = INDEX.lock().map_err(|e| e.to_string())?;
+        if v.len() <= index {
+            v.resize_with(index + 1, Default::default);
+        }
+        v[index].clone()
+    };
+    // Held while walking: a second search of the same source waits for this walk and reuses it.
+    let mut slot = slot.lock().map_err(|e| e.to_string())?;
+    if let Some(files) = slot.as_ref() {
+        return Ok(files.clone());
+    }
+    let src = connected(index)?;
+    let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::from([(String::new(), 0usize)]);
+    let mut folders = 0;
+    while let Some((path, depth)) = queue.pop_front() {
+        folders += 1;
+        if folders > MAX_FOLDERS {
+            break;
+        }
+        let Ok(entries) = src.list(&path) else { continue };
+        for e in entries {
+            if e.is_dir {
+                if depth < MAX_DEPTH {
+                    queue.push_back((e.path, depth + 1));
+                }
+            } else if seen.insert((e.name.clone(), e.size)) {
+                // DLNA servers list the same file under several views; keep it once.
+                files.push(e);
+            }
+        }
+    }
+    let files = Arc::new(files);
+    *slot = Some(files.clone());
+    Ok(files)
+}
+
+/// Lowercase words, punctuation and dots as separators ("The.Bear.S01E02" → the bear s01e02).
+fn words(text: &str) -> String {
+    text.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect()
+}
+
+fn matches(query: &[String], haystack: &str) -> bool {
+    let hay: Vec<&str> = haystack.split_whitespace().collect();
+    query.iter().all(|q| hay.iter().any(|h| h.starts_with(q.as_str())))
+}
+
+/// Files in all sources whose name or parsed title matches. Runs on a worker thread; returns
+/// items with their file names (posters are built on the UI thread).
+pub(crate) fn search_files(query: &str) -> Vec<(Item, String)> {
+    let q: Vec<String> = words(query).split_whitespace().map(str::to_string).collect();
+    if q.is_empty() {
+        return vec![];
+    }
+    let count = SOURCES.lock().map(|v| v.len()).unwrap_or(0);
+    let mut out = Vec::new();
+    for index in 0..count {
+        let Ok(files) = file_index(index) else { continue };
+        for e in files.iter() {
+            let item = file_item(index, &e.path, &e.name, e.size);
+            let hay = words(&format!("{} {} {}", e.name, display_title(&item), item.grandparent_title.as_deref().unwrap_or("")));
+            if matches(&q, &hay) {
+                out.push((item, e.name.clone()));
+                if out.len() >= 200 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn display_title(item: &Item) -> String {
@@ -528,5 +625,49 @@ mod tests {
         assert_eq!(default_name(Kind::Smb, "smb://nas/Media/"), "Media");
         assert_eq!(default_name(Kind::Local, "/Users/me/Movies"), "Movies");
         assert_eq!(default_name(Kind::WebDav, "https://dav.example.com/"), "dav.example.com");
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::{matches, words};
+
+    fn q(s: &str) -> Vec<String> {
+        words(s).split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn matches_word_prefixes() {
+        let hay = words("The.Bear.S01E02.1080p.mkv The Bear · S1 · E2");
+        assert!(matches(&q("bear"), &hay));
+        assert!(matches(&q("the be"), &hay));
+        assert!(matches(&q("BEAR s01e02"), &hay));
+        assert!(!matches(&q("bears"), &hay));
+        assert!(!matches(&q("ear"), &hay));
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    /// Against the MiniDLNA test container, if it's running: every file once, though DLNA lists
+    /// each under several views.
+    #[test]
+    fn searches_a_real_dlna_server() {
+        if std::net::TcpStream::connect("127.0.0.1:8200").is_err() {
+            return;
+        }
+        let config = encheo_vfs::Config {
+            kind: encheo_vfs::Kind::Dlna,
+            name: "t".into(),
+            location: "http://127.0.0.1:8200/rootDesc.xml".into(),
+            username: String::new(),
+            password: String::new(),
+            host_key: None,
+        };
+        *super::SOURCES.lock().unwrap() = vec![config];
+        let found = super::search_files("big test");
+        let names: Vec<_> = found.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["Big.Test.2024.1080p.WEB.mkv"], "{names:?}");
+        assert_eq!(found[0].0.title, "Big Test");
     }
 }
