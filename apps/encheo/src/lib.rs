@@ -4,6 +4,7 @@
 //! and decoding run on a tokio runtime; results come back through `on_ui`.
 
 mod backend;
+mod favourites;
 mod images;
 mod langs;
 mod progress;
@@ -59,6 +60,7 @@ struct State {
     /// The file source and folder shown in the grid, if a file source is selected.
     share_view: Option<(usize, String)>,
     progress: Option<progress::Store>,
+    favourites: Option<favourites::Store>,
     /// Everything we've seen, by rating key, so clicks can find the full item.
     items: HashMap<String, Item>,
     images: HashMap<String, Image>,
@@ -373,6 +375,12 @@ fn enter_home() {
                     Some(i)
                 })
                 .collect();
+            let favs = favourite_posters();
+            if !favs.is_empty() {
+                let model = Rc::new(VecModel::from(favs));
+                rows.push(HomeRow { title: "Favourites".into(), library: -1, landscape: false, square: false, items: ModelRc::from(model.clone()) });
+                row_models.push(model);
+            }
             if !watch.is_empty() {
                 let model = Rc::new(VecModel::from(watch.iter().map(|i| poster(i, false)).collect::<Vec<_>>()));
                 rows.push(HomeRow { title: "Watchlist".into(), library: -1, landscape: false, square: false, items: ModelRc::from(model.clone()) });
@@ -689,7 +697,22 @@ fn open_item(id: String) {
     if let Some(guid) = id.strip_prefix("watch:") {
         return open_watchlist_item(guid.to_string());
     }
-    let Some(item) = with_state(|s| s.items.get(&id).cloned()) else { return };
+    let Some(item) = with_state(|s| s.items.get(&id).cloned()) else {
+        // Not loaded this session (a favourite after a restart): ask its server.
+        let Some(server) = backend_for(&id) else { return };
+        rt().spawn(async move {
+            let found = server.metadata(&id).await;
+            on_ui(move |ui| match found {
+                Ok(Some(item)) => {
+                    remember([item.clone()]);
+                    show_detail(item);
+                }
+                Ok(None) => toast(ui, "It's no longer on the server."),
+                Err(e) => toast(ui, format!("Couldn't open it: {e}")),
+            });
+        });
+        return;
+    };
     // Episodes and part-watched movies from "Continue Watching" go straight to the player.
     if item.kind == ItemKind::Episode {
         return play(item);
@@ -881,6 +904,44 @@ fn fill_detail_text(ui: &AppWindow, item: &Item) {
     ui.set_detail_can_restart(playable && item.view_offset.is_some_and(|o| o > 0));
     ui.set_detail_can_mark_watched(matches!(item.kind, ItemKind::Movie | ItemKind::Episode | ItemKind::Show | ItemKind::Season));
     ui.set_detail_watched(item.is_watched());
+    ui.set_detail_can_favourite(matches!(item.kind, ItemKind::Movie | ItemKind::Show | ItemKind::Artist | ItemKind::Album));
+    ui.set_detail_favourite(with_state(|s| s.favourites.get_or_insert_with(favourites::Store::load).contains(&item.rating_key)));
+}
+
+fn toggle_favourite() {
+    let Some(item) = with_state(|s| s.detail.clone()) else { return };
+    let p = poster(&item, false);
+    let fav = favourites::Favourite {
+        id: item.rating_key.clone(),
+        title: p.title.to_string(),
+        subtitle: p.subtitle.to_string(),
+        thumb: item.thumb.clone(),
+        square: p.square,
+    };
+    let now = with_state(|s| s.favourites.get_or_insert_with(favourites::Store::load).toggle(fav));
+    let ui = ui();
+    ui.set_detail_favourite(now);
+    toast(&ui, if now { "Added to Favourites" } else { "Removed from Favourites" });
+}
+
+fn favourite_posters() -> Vec<Poster> {
+    let favs = with_state(|s| s.favourites.get_or_insert_with(favourites::Store::load).all().to_vec());
+    favs.into_iter()
+        .map(|f| {
+            let (w, h) = if f.square { (400, 400) } else { (320, 480) };
+            let url = art_url(f.thumb.as_deref(), w, h);
+            Poster {
+                id: f.id.into(),
+                title: f.title.into(),
+                subtitle: f.subtitle.into(),
+                image: want_image(&url),
+                art_url: url.into(),
+                progress: 0.0,
+                watched: false,
+                square: f.square,
+            }
+        })
+        .collect()
 }
 
 /// "2 hrs 6 min".
@@ -2175,7 +2236,8 @@ enum DetailRow {
 fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     let actions = usize::from(!ui.get_play_label().is_empty())
         + usize::from(ui.get_detail_can_restart())
-        + usize::from(ui.get_detail_can_mark_watched());
+        + usize::from(ui.get_detail_can_mark_watched())
+        + usize::from(ui.get_detail_can_favourite());
     let kind = ui.get_detail_kind();
     let (seasons, episodes, albums, tracks, related) = with_models(|m| {
         (m.seasons.row_count(), m.episodes.row_count(), m.albums.row_count(), m.tracks.row_count(), m.related.row_count())
@@ -2382,6 +2444,9 @@ fn detail_activate(ui: &AppWindow, kind: DetailRow, row: i32, col: i32, rows: &[
             }
             if ui.get_detail_can_mark_watched() {
                 actions.push(toggle_watched);
+            }
+            if ui.get_detail_can_favourite() {
+                actions.push(toggle_favourite);
             }
             if let Some(f) = actions.get(col as usize) {
                 f();
@@ -2677,6 +2742,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.on_play_detail(play_detail);
     ui.on_play_from_start(play_from_start);
     ui.on_toggle_watched(toggle_watched);
+    ui.on_toggle_favourite(toggle_favourite);
     ui.on_select_season(select_season);
     ui.on_play_episode(|id| {
         if let Some(item) = with_state(|s| s.items.get(id.as_str()).cloned()) {

@@ -225,6 +225,7 @@ component Icon inherits Rectangle {
     if root.name == "fullscreen": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"; }
     if root.name == "exit-fullscreen": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M9 4v5H4M15 4v5h5M20 15h-5v5M4 15h5v5"; }
     if root.name == "list": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4 6h16M4 12h16M4 18h11"; }
+    if root.name == "heart": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M12 20s-7.5-4.6-9.2-9.1C1.6 7.6 3.9 4.5 7.2 4.5c2 0 3.6 1.1 4.8 2.8c1.2-1.7 2.8-2.8 4.8-2.8c3.3 0 5.6 3.1 4.4 6.4C19.5 15.4 12 20 12 20z"; }
     if root.name == "eye": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M2.5 12s3.5-6.5 9.5-6.5s9.5 6.5 9.5 6.5s-3.5 6.5-9.5 6.5S2.5 12 2.5 12zM12 9a3 3 0 1 1 0 6a3 3 0 1 1 0-6z"; }
     if root.name == "restart": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M5 5v6h6M5.6 11A7 7 0 1 1 7 17"; }
     if root.name == "person": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M12 4a4 4 0 1 1 0 8a4 4 0 1 1 0-8zM4.5 20c1-3.8 4-5.5 7.5-5.5s6.5 1.7 7.5 5.5"; }
@@ -1140,6 +1141,8 @@ component Detail inherits Rectangle {
     in property <bool> can-restart;
     in property <bool> watched;
     in property <bool> can-mark-watched;
+    in property <bool> can-favourite;
+    in property <bool> favourite;
     in property <bool> is-show;
     in property <[string]> seasons;
     in property <int> selected-season;
@@ -1155,6 +1158,7 @@ component Detail inherits Rectangle {
     callback play();
     callback play-from-start();
     callback toggle-watched();
+    callback toggle-favourite();
     callback open(string);
     callback play-track(string);
     callback select-season(int);
@@ -1166,6 +1170,7 @@ component Detail inherits Rectangle {
     property <int> play-col: root.play-label != "" ? 0 : -1;
     property <int> restart-col: root.can-restart ? (root.play-label != "" ? 1 : 0) : -1;
     property <int> watched-col: root.can-mark-watched ? (root.play-label != "" ? 1 : 0) + (root.can-restart ? 1 : 0) : -1;
+    property <int> favourite-col: root.can-favourite ? (root.play-label != "" ? 1 : 0) + (root.can-restart ? 1 : 0) + (root.can-mark-watched ? 1 : 0) : -1;
     function action-focused(c: int) -> bool { return root.nav && Nav.row == 0 && Nav.col == c && c >= 0; }
     // Scroll so a focused element (window coordinates) is fully visible; the first row scrolls to the top.
     function reveal(top: length, height: length) {
@@ -1240,6 +1245,13 @@ component Detail inherits Rectangle {
                             tip: root.watched ? "Mark as unwatched" : "Mark as watched";
                             clicked => { root.toggle-watched(); }
                         }
+                        if root.can-favourite: RoundAction {
+                            icon: "heart";
+                            active: root.favourite;
+                            focused: root.action-focused(root.favourite-col);
+                            tip: root.favourite ? "Remove from Favourites" : "Add to Favourites";
+                            clicked => { root.toggle-favourite(); }
+                        }
                     }
                 }
                 VerticalLayout {
@@ -1267,6 +1279,7 @@ component Detail inherits Rectangle {
                         }
                         if root.can-restart: RoundAction { icon: "restart"; clicked => { root.play-from-start(); } }
                         if root.can-mark-watched: RoundAction { icon: "eye"; active: root.watched; clicked => { root.toggle-watched(); } }
+                        if root.can-favourite: RoundAction { icon: "heart"; active: root.favourite; clicked => { root.toggle-favourite(); } }
                     }
                     HorizontalLayout {
                         spacing: 14px;
@@ -1929,11 +1942,14 @@ export component AppWindow inherits Window {
     in property <bool> detail-can-restart;
     in property <bool> detail-watched;
     in property <bool> detail-can-mark-watched;
+    in property <bool> detail-can-favourite;
+    in property <bool> detail-favourite;
     in property <[Person]> people;
     in property <[Score]> scores;
     in property <[Poster]> related;
     callback play-from-start();
     callback toggle-watched();
+    callback toggle-favourite();
     callback back();
     callback play-detail();
     callback play-track(string);
@@ -2059,12 +2075,15 @@ export component AppWindow inherits Window {
         can-restart: root.detail-can-restart;
         watched: root.detail-watched;
         can-mark-watched: root.detail-can-mark-watched;
+        can-favourite: root.detail-can-favourite;
+        favourite: root.detail-favourite;
         people: root.people;
         scores: root.scores;
         related: root.related;
         bottom-inset: root.music-active ? 96px : 0px;
         play-from-start => { root.play-from-start(); }
         toggle-watched => { root.toggle-watched(); }
+        toggle-favourite => { root.toggle-favourite(); }
         open(id) => { root.open-item(id); }
         play-track(id) => { root.play-track(id); }
         back => { root.back(); }
