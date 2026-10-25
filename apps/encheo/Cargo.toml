@@ -14,11 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 dirs = "7.0.0"
-encheo-discovery = { version = "0.1.0", path = "../../crates/discovery" }
-encheo-jellyfin = { version = "0.1.0", path = "../../crates/jellyfin" }
-encheo-plex = { version = "0.1.0", path = "../../crates/plex" }
-encheo-sublang = { version = "0.1.0", path = "../../crates/sublang" }
-encheo-vfs = { version = "0.1.0", path = "../../crates/vfs" }
+encheo-discovery = { version = "0.2.0", path = "../../crates/discovery" }
+encheo-jellyfin = { version = "0.2.0", path = "../../crates/jellyfin" }
+encheo-plex = { version = "0.2.0", path = "../../crates/plex" }
+encheo-sublang = { version = "0.2.0", path = "../../crates/sublang" }
+encheo-vfs = { version = "0.2.0", path = "../../crates/vfs" }
 glow = "0.18.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 libmpv2 = "6.0.0"
