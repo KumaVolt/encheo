@@ -229,6 +229,9 @@ pub struct Item {
     pub rating_key: String,
     #[serde(default)]
     pub key: String,
+    /// Plex's global id, e.g. `plex://movie/5d77…`; the same on every server.
+    #[serde(default)]
+    pub guid: Option<String>,
     #[serde(rename = "type", default)]
     pub kind: ItemKind,
     pub title: String,

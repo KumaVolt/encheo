@@ -77,6 +77,7 @@ pub struct Plex {
     info: ClientInfo,
     plex_tv: String,
     clients_plex_tv: String,
+    discover: String,
 }
 
 impl Plex {
@@ -87,13 +88,21 @@ impl Plex {
             .gzip(true)
             .build()
             .expect("reqwest client");
-        Self { http, info, plex_tv: "https://plex.tv".into(), clients_plex_tv: "https://clients.plex.tv".into() }
+        Self {
+            http,
+            info,
+            plex_tv: "https://plex.tv".into(),
+            clients_plex_tv: "https://clients.plex.tv".into(),
+            discover: "https://discover.provider.plex.tv".into(),
+        }
     }
 
     /// Point the plex.tv calls somewhere else (tests).
     pub fn with_base_urls(mut self, plex_tv: impl Into<String>, clients_plex_tv: impl Into<String>) -> Self {
         self.plex_tv = plex_tv.into();
-        self.clients_plex_tv = clients_plex_tv.into();
+        let clients = clients_plex_tv.into();
+        self.discover = clients.clone();
+        self.clients_plex_tv = clients;
         self
     }
 
@@ -133,6 +142,18 @@ impl Plex {
     pub async fn account(&self, token: &str) -> Result<Account> {
         let url = format!("{}/api/v2/user", self.plex_tv);
         Self::json(self.request(reqwest::Method::GET, &url, Some(token))).await
+    }
+
+    /// The account's watchlist (kept by plex.tv, not by a server). Items carry their `guid`;
+    /// find them on a server with [`Server::find_by_guid`].
+    pub async fn watchlist(&self, token: &str) -> Result<Vec<Item>> {
+        let url = format!("{}/library/sections/watchlist/all?includeAdvanced=1", self.discover);
+        let r = self
+            .request(reqwest::Method::GET, &url, Some(token))
+            .header("X-Plex-Container-Start", "0")
+            .header("X-Plex-Container-Size", "100");
+        let e: model::Envelope<model::MetadataPage> = Self::json(r).await?;
+        Ok(e.container.metadata)
     }
 
     /// Every Plex Media Server this account can use, owned or shared.

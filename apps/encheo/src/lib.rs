@@ -316,6 +316,10 @@ fn enter_home() {
         let mut libs: Vec<(String, encheo_plex::Library, Vec<Item>)> = Vec::new();
         let mut on_deck = Vec::new();
         let mut errors = Vec::new();
+        let watchlist = match with_state(|s| (plex(&s.session), s.session.token.clone())) {
+            (plex, Some(token)) => plex.watchlist(&token).await.unwrap_or_default(),
+            _ => vec![],
+        };
         for b in &backends {
             match b.libraries().await {
                 Ok(list) => {
@@ -359,6 +363,20 @@ fn enter_home() {
             let cw: Vec<Poster> = file_posters.into_iter().chain(on_deck.iter().map(|i| poster(i, true))).collect();
             let mut rows = Vec::new();
             let mut row_models = Vec::new();
+            // Watchlist entries live on plex.tv; their ids say so, and opening one finds it on the server.
+            let watch: Vec<Item> = watchlist
+                .into_iter()
+                .filter_map(|mut i| {
+                    i.rating_key = format!("watch:{}", i.guid.clone()?);
+                    Some(i)
+                })
+                .collect();
+            if !watch.is_empty() {
+                let model = Rc::new(VecModel::from(watch.iter().map(|i| poster(i, false)).collect::<Vec<_>>()));
+                rows.push(HomeRow { title: "Watchlist".into(), library: -1, landscape: false, square: false, items: ModelRc::from(model.clone()) });
+                row_models.push(model);
+                remember(watch);
+            }
             for (index, (group, l, items)) in libs.iter().enumerate() {
                 if items.is_empty() {
                     continue;
@@ -566,7 +584,9 @@ fn poster(item: &Item, landscape: bool) -> Poster {
 fn art_url(path: Option<&str>, w: u32, h: u32) -> String {
     match path {
         // Jellyfin/Emby give full image URLs; ask for the size we need.
-        Some(p) if p.starts_with("http") => format!("{p}&maxWidth={w}&maxHeight={h}"),
+        Some(p) if p.contains("/Items/") => format!("{p}&maxWidth={w}&maxHeight={h}"),
+        // Other full URLs (Plex watchlist art from plex.tv) as they are.
+        Some(p) if p.starts_with("http") => p.to_string(),
         Some(p) if !p.is_empty() => server().map(|s| s.image_url(p, w, h)).unwrap_or_default(),
         _ => String::new(),
     }
@@ -664,6 +684,9 @@ fn open_item(id: String) {
     if shares::open(&id) {
         return;
     }
+    if let Some(guid) = id.strip_prefix("watch:") {
+        return open_watchlist_item(guid.to_string());
+    }
     let Some(item) = with_state(|s| s.items.get(&id).cloned()) else { return };
     // Episodes and part-watched movies from "Continue Watching" go straight to the player.
     if item.kind == ItemKind::Episode {
@@ -673,6 +696,21 @@ fn open_item(id: String) {
         return play_music(vec![item], 0);
     }
     show_detail(item);
+}
+
+/// A watchlist title: show it from the server if the server has it.
+fn open_watchlist_item(guid: String) {
+    let Some(server) = server() else { return };
+    rt().spawn(async move {
+        let found = server.find_by_guid(&guid).await.ok().flatten();
+        on_ui(move |ui| match found {
+            Some(item) => {
+                remember([item.clone()]);
+                show_detail(item);
+            }
+            None => toast(ui, "Not on your server yet."),
+        });
+    });
 }
 
 fn show_detail(item: Item) {

@@ -84,6 +84,12 @@ impl Server {
         Ok(items)
     }
 
+    /// The server's copy of a title from its global `guid` (e.g. a watchlist entry), if it has it.
+    pub async fn find_by_guid(&self, guid: &str) -> Result<Option<Item>> {
+        let g: String = url::form_urlencoded::byte_serialize(guid.as_bytes()).collect();
+        Ok(self.list(&format!("/library/all?guid={g}")).await?.into_iter().next())
+    }
+
     /// Seasons of a show, episodes of a season, albums of an artist, or tracks of an album.
     pub async fn children(&self, rating_key: &str) -> Result<Vec<Item>> {
         self.list(&format!("/library/metadata/{rating_key}/children")).await

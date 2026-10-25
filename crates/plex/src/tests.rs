@@ -234,3 +234,22 @@ fn show_preferences_parse() {
     assert_eq!(settings[1].value, "ja");
     assert_eq!(settings[1].choices().collect::<Vec<_>>(), ["", "ja", "en", "es-419"]);
 }
+
+#[tokio::test]
+async fn watchlist_and_guid_lookup() {
+    let (base, _) = mock(|path| match path {
+        p if p.starts_with("/library/sections/watchlist/all") => (
+            200,
+            r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"66","type":"movie","title":"Blades","year":2026,"guid":"plex://movie/66","thumb":"https://metadata-static.plex.tv/x.jpg"}]}}"#.into(),
+        ),
+        p if p.starts_with("/library/all?guid=plex%3A%2F%2Fmovie%2F66") => (200, r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"45028","type":"movie","title":"Blades"}]}}"#.into()),
+        p if p.starts_with("/library/all?guid=") => (200, r#"{"MediaContainer":{"size":0}}"#.into()),
+        _ => (404, "{}".into()),
+    });
+    let plex = Plex::new(ClientInfo::new("cid", "Den")).with_base_urls(&base, &base);
+    let list = plex.watchlist("tok").await.unwrap();
+    assert_eq!(list[0].guid.as_deref(), Some("plex://movie/66"));
+    let server = plex.server_at("Home", &base, "t");
+    assert_eq!(server.find_by_guid("plex://movie/66").await.unwrap().unwrap().rating_key, "45028");
+    assert!(server.find_by_guid("plex://movie/999").await.unwrap().is_none());
+}
