@@ -1,0 +1,135 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libmpv-dev pkg-config libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked -p encheo
+      - name: Package
+        run: |
+          mkdir -p dist/encheo
+          cp target/release/encheo dist/encheo/
+          cp README.md LICENSE dist/encheo/
+          tar -C dist -czf encheo-linux-x86_64.tar.gz encheo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-linux-x86_64
+          path: encheo-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: libmpv
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Community Windows builds of mpv; the dev package has libmpv-2.dll and headers.
+          gh release download --repo shinchiro/mpv-winbuild-cmake --pattern "mpv-dev-x86_64-2*.7z" --dir mpv-dl
+          7z x (Get-ChildItem mpv-dl\*.7z | Select-Object -First 1).FullName -ompv | Out-Null
+          # MSVC needs an import library; build one from the DLL's exports.
+          $exports = dumpbin /exports mpv\libmpv-2.dll | Select-String '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(mpv_\w+)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          "LIBRARY libmpv-2.dll`nEXPORTS`n" + ($exports -join "`n") | Set-Content mpv\mpv.def
+          lib /nologo /def:mpv\mpv.def /machine:x64 /out:mpv\mpv.lib
+          "MPV_LIB_DIR=$PWD\mpv" | Out-File -Append $env:GITHUB_ENV
+          "$PWD\mpv" | Out-File -Append $env:GITHUB_PATH
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked -p encheo
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist\encheo | Out-Null
+          Copy-Item target\release\encheo.exe, mpv\libmpv-2.dll, README.md, LICENSE dist\encheo\
+          Compress-Archive dist\encheo encheo-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-windows-x86_64
+          path: encheo-windows-x86_64.zip
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install mpv
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked -p encheo
+      - name: Package
+        run: |
+          APP=dist/Encheo.app
+          mkdir -p "$APP/Contents/MacOS"
+          cp target/release/encheo "$APP/Contents/MacOS/Encheo"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Encheo</string>
+            <key>CFBundleIdentifier</key><string>app.encheo</string>
+            <key>CFBundleExecutable</key><string>Encheo</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          codesign --force --sign - "$APP"
+          ditto -c -k --keepParent "$APP" encheo-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-macos-arm64
+          path: encheo-macos-arm64.zip
+
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools
+        run: |
+          cargo install cargo-apk --locked
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+      - name: libmpv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/android-libs.sh
+      - name: APK (signed with a throwaway key, for testing)
+        run: |
+          # A real release key comes later (repository secret). For now a fresh key per build.
+          keytool -genkeypair -v -keystore "$RUNNER_TEMP/ci.keystore" -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 365 -storepass android -keypass android \
+            -dname "CN=Encheo CI" >/dev/null
+          export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/ci.keystore"
+          export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
+          cd apps/encheo
+          MPV_LIB_DIR=$PWD/android-libs/arm64-v8a cargo apk build --lib --release --target aarch64-linux-android
+          cp ../../target/release/apk/encheo.apk ../../encheo-android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-android-arm64
+          path: encheo-android-arm64.apk

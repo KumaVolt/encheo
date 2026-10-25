@@ -1,0 +1,10 @@
+[
+  {"name":"Living Room","product":"Plex Media Server","clientIdentifier":"abc","provides":"server","owned":true,"accessToken":"srv-token",
+   "connections":[
+     {"protocol":"https","address":"1.2.3.4","port":32400,"uri":"https://1-2-3-4.abc.plex.direct:32400","local":false,"relay":false,"IPv6":false},
+     {"protocol":"https","address":"relay","port":443,"uri":"https://relay.abc.plex.direct:8443","local":false,"relay":true,"IPv6":false},
+     {"protocol":"https","address":"fe80::1","port":32400,"uri":"https://fe80--1.abc.plex.direct:32400","local":true,"relay":false,"IPv6":true},
+     {"protocol":"https","address":"192.168.1.10","port":32400,"uri":"https://192-168-1-10.abc.plex.direct:32400","local":true,"relay":false,"IPv6":false}
+   ]},
+  {"name":"iPhone","product":"Plex for iOS","clientIdentifier":"def","provides":"client,player","connections":[]}
+]

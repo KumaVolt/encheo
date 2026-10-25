@@ -1,0 +1,4 @@
+{"MediaContainer":{"size":3,"Directory":[
+  {"key":"1","title":"Movies","type":"movie","thumb":"/:/resources/movie.png"},
+  {"key":"2","title":"TV Shows","type":"show"},
+  {"key":"3","title":"Music","type":"artist"}]}}

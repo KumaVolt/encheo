@@ -1,0 +1,16 @@
+[package]
+name = "encheo-sublang"
+description = "Detect the language of untagged subtitle tracks from their text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+matroska-demuxer = "0.8.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
+thiserror = "2.0.21"
+whatlang = "0.18.0"
+
+# Android: verify TLS against bundled Mozilla roots; the system verifier needs Java glue.
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1"

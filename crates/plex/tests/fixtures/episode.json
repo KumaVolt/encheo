@@ -1,0 +1,5 @@
+{"MediaContainer":{"size":1,"Metadata":[
+  {"ratingKey":"501","type":"episode","title":"Pilot","index":1,"parentIndex":1,"grandparentTitle":"Severance","grandparentRatingKey":"500",
+   "duration":3420000,"Marker":[{"type":"intro","startTimeOffset":62000,"endTimeOffset":121000},{"type":"credits","startTimeOffset":3300000,"endTimeOffset":3420000},{"type":"bumper","startTimeOffset":0,"endTimeOffset":1}],
+   "Media":[{"Part":[{"id":77,"key":"/library/parts/77/1/ep.mkv","Stream":[{"id":1,"streamType":1,"index":0,"codec":"hevc"},{"id":2,"streamType":2,"index":1,"codec":"eac3","languageCode":"eng","extendedDisplayTitle":"English (EAC3 Stereo)","selected":true},{"id":3,"streamType":3,"index":2,"codec":"srt","extendedDisplayTitle":"English Forced (SRT)","forced":true},{"id":4,"streamType":3,"index":3,"codec":"srt","extendedDisplayTitle":"English (SRT)","selected":true},{"id":5,"streamType":3,"codec":"srt","extendedDisplayTitle":"Dutch (SRT External)"}]}]}]}
+]}}

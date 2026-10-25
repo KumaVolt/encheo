@@ -1,0 +1,75 @@
+[package]
+name = "encheo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# rlib for the desktop binary, cdylib for Android (loaded by the activity).
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "encheo"
+path = "src/main.rs"
+
+[dependencies]
+dirs = "7.0.0"
+encheo-plex = { version = "0.1.0", path = "../../crates/plex" }
+encheo-sublang = { version = "0.1.0", path = "../../crates/sublang" }
+glow = "0.18.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+libmpv2 = "6.0.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+uuid = { version = "1.29.0", features = ["v4"] }
+
+# Desktop: winit windows, OpenGL rendering (femtovg).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+open = "5.4.5"
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2", "unstable-winit-030"] }
+
+# Android: android-activity backend (Skia, asked for OpenGL ES).
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.18", default-features = false, features = ["std", "backend-android-activity-06", "compat-1-2"] }
+
+[build-dependencies]
+slint-build = "1.18"
+
+# Android packaging (cargo-apk). libmpv.so comes from scripts/android-libs.sh.
+[package.metadata.android]
+package = "app.encheo"
+apk_name = "encheo"
+build_targets = ["aarch64-linux-android"]
+runtime_libs = "android-libs"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+# Runs on phones and TVs: neither a touchscreen nor the TV feature is required.
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.touchscreen"
+required = false
+
+[[package.metadata.android.uses_feature]]
+name = "android.software.leanback"
+required = false
+
+[package.metadata.android.application]
+label = "Encheo"
+# Local Plex servers are often reached over plain http://<ip>:32400.
+uses_cleartext_traffic = true
+
+[package.metadata.android.application.activity]
+orientation = "unspecified"
+config_changes = "orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode"
+
+# Show up in the phone launcher and in the Android TV home screen.
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = ["android.intent.category.LAUNCHER", "android.intent.category.LEANBACK_LAUNCHER"]

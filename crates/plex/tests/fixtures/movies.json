@@ -1,0 +1,9 @@
+{"MediaContainer":{"size":2,"totalSize":240,"offset":0,"Metadata":[
+  {"ratingKey":"101","key":"/library/metadata/101","type":"movie","title":"Arrival","year":2016,"summary":"A linguist…",
+   "contentRating":"PG-13","audienceRating":8.2,"thumb":"/library/metadata/101/thumb/1700","art":"/library/metadata/101/art/1700",
+   "duration":6960000,"viewOffset":3480000,"Genre":[{"tag":"Science Fiction"},{"tag":"Drama"}],"Director":[{"tag":"Denis Villeneuve","thumb":"https://metadata-static.plex.tv/d.jpg"}],"Rating":[{"image":"imdb://image.rating","value":7.9,"type":"audience"},{"image":"rottentomatoes://image.rating.ripe","value":9.4,"type":"critic"}],
+   "Media":[{"id":5,"duration":6960000,"bitrate":24000,"width":3840,"height":2160,"videoResolution":"4k","videoCodec":"hevc",
+     "audioCodec":"truehd","audioChannels":8,"container":"mkv","videoDynamicRange":"HDR10",
+     "Part":[{"id":9,"key":"/library/parts/9/1700/file.mkv","file":"/media/Arrival (2016).mkv","size":40000000000,"container":"mkv"}]}]},
+  {"ratingKey":"102","type":"movie","title":"Heat","year":1995,"viewCount":2,"duration":10200000,"someNewField":{"x":1}}
+]}}

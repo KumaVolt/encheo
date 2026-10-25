@@ -1,0 +1,6 @@
+{"MediaContainer":{"size":2,"Metadata":[
+  {"ratingKey":"901","type":"track","title":"Teardrop","index":3,"parentIndex":1,"parentTitle":"Mezzanine","parentRatingKey":"900",
+   "parentThumb":"/library/metadata/900/thumb/1","grandparentTitle":"Massive Attack","duration":330000,
+   "Media":[{"audioCodec":"flac","audioChannels":2,"container":"flac","Part":[{"key":"/library/parts/88/1/03.flac"}]}]},
+  {"ratingKey":"902","type":"track","title":"Unfinished Sympathy","grandparentTitle":"Massive Attack","originalTitle":"Massive Attack feat. Shara Nelson","duration":308000}
+]}}
