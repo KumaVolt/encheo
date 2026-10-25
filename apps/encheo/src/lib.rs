@@ -1783,6 +1783,7 @@ fn scan_network() {
                         encheo_discovery::Kind::Smb => (1, "SMB"),
                         encheo_discovery::Kind::WebDav => (2, "WebDAV"),
                         encheo_discovery::Kind::Emby => (3, "Emby"),
+                        encheo_discovery::Kind::Dlna => (7, "DLNA"),
                         _ => (3, "Jellyfin"),
                     };
                     FoundSource { kind, label: label.into(), name: f.name.into(), address: f.address.into() }

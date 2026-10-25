@@ -6,6 +6,7 @@
 //!
 //! The API is blocking; call it from a worker thread.
 
+mod dlna;
 mod ftp;
 mod local;
 pub mod names;
@@ -42,6 +43,7 @@ pub enum Kind {
     Sftp,
     Ftp,
     Nfs,
+    Dlna,
 }
 
 impl Kind {
@@ -53,6 +55,7 @@ impl Kind {
             Kind::Sftp => "SFTP",
             Kind::Ftp => "FTP",
             Kind::Nfs => "NFS",
+            Kind::Dlna => "DLNA",
         }
     }
 }
@@ -137,6 +140,7 @@ pub enum Source {
     Sftp(sftp::Sftp),
     Ftp(ftp::Ftp),
     Nfs(nfs::Nfs),
+    Dlna(dlna::Dlna),
 }
 
 impl Source {
@@ -149,6 +153,7 @@ impl Source {
             Kind::Sftp => Source::Sftp(sftp::Sftp::connect(config)?),
             Kind::Ftp => Source::Ftp(ftp::Ftp::connect(config)?),
             Kind::Nfs => Source::Nfs(nfs::Nfs::connect(config)?),
+            Kind::Dlna => Source::Dlna(dlna::Dlna::connect(&config.location)?),
         };
         source.list("")?;
         Ok(source)
@@ -163,6 +168,7 @@ impl Source {
             Source::Sftp(s) => s.list(path)?,
             Source::Ftp(s) => s.list(path)?,
             Source::Nfs(s) => s.list(path)?,
+            Source::Dlna(s) => s.list(path)?,
         };
         entries.retain(|e| !e.name.starts_with('.') && (e.is_dir || e.media_kind().is_some()));
         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| names::natural_cmp(&a.name, &b.name)));
@@ -178,6 +184,7 @@ impl Source {
             Source::Sftp(s) => s.list(path),
             Source::Ftp(s) => s.list(path),
             Source::Nfs(s) => s.list(path),
+            Source::Dlna(s) => s.list(path),
         }
     }
 
@@ -189,6 +196,7 @@ impl Source {
             Source::Sftp(s) => s.open(path),
             Source::Ftp(s) => s.open(path),
             Source::Nfs(s) => s.open(path),
+            Source::Dlna(s) => s.open(path),
         }
     }
 
@@ -197,6 +205,7 @@ impl Source {
         match self {
             Source::Local(s) => Some(s.direct_url(path)),
             Source::WebDav(s) => Some(s.direct_url(path)),
+            Source::Dlna(s) => s.direct_url(path),
             Source::Smb(_) | Source::Sftp(_) | Source::Ftp(_) | Source::Nfs(_) => None,
         }
     }

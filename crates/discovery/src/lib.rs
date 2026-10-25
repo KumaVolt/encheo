@@ -19,6 +19,7 @@ pub enum Kind {
     Plex,
     Smb,
     WebDav,
+    Dlna,
 }
 
 /// Something found on the network.
@@ -38,6 +39,7 @@ pub fn discover(timeout: Duration) -> Vec<Found> {
         Box::new(move || ask_media_server(Kind::Emby, "who is EmbyServer?", timeout)),
         Box::new(move || plex_gdm(timeout)),
         Box::new(move || mdns(timeout)),
+        Box::new(move || dlna(timeout)),
     ];
     for job in jobs {
         let tx = tx.clone();
@@ -114,6 +116,60 @@ pub(crate) fn parse_gdm_reply(data: &[u8], from: SocketAddr) -> Option<Found> {
     };
     let port = header("Port").unwrap_or_else(|| "32400".into());
     Some(Found { kind: Kind::Plex, name: header("Name").unwrap_or_else(|| "Plex".into()), address: format!("http://{}:{port}", from.ip()) })
+}
+
+/// DLNA/UPnP media servers via SSDP: multicast M-SEARCH, answers carry a `LOCATION:` header
+/// pointing at the device description, which holds the name.
+pub fn dlna(timeout: Duration) -> Vec<Found> {
+    let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else { return vec![] };
+    let query = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: urn:schemas-upnp-org:device:MediaServer:1\r\n\r\n";
+    let _ = sock.send_to(query.as_bytes(), (Ipv4Addr::new(239, 255, 255, 250), 1900));
+    let mut locations = BTreeSet::new();
+    collect(&sock, timeout, &mut |data: &[u8], _| {
+        if let Some(l) = ssdp_location(data) {
+            locations.insert(l);
+        }
+    });
+    locations
+        .into_iter()
+        .map(|location| {
+            let name = http_get(&location).and_then(|desc| xml_field(&desc, "friendlyName")).unwrap_or_else(|| "DLNA server".into());
+            Found { kind: Kind::Dlna, name, address: location }
+        })
+        .collect()
+}
+
+pub(crate) fn ssdp_location(data: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(data).ok()?;
+    if !text.contains("MediaServer") {
+        return None;
+    }
+    text.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case("location").then(|| v.trim().to_string())
+    })
+}
+
+/// A minimal HTTP GET for device descriptions (plain http on the LAN), so discovery needs no
+/// HTTP client.
+fn http_get(url: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let rest = url.strip_prefix("http://")?;
+    let (hostport, path) = rest.split_once('/').map(|(h, p)| (h, format!("/{p}"))).unwrap_or((rest, "/".into()));
+    let addr = if hostport.contains(':') { hostport.to_string() } else { format!("{hostport}:80") };
+    let sa: SocketAddr = std::net::ToSocketAddrs::to_socket_addrs(&addr).ok()?.next()?;
+    let mut s = std::net::TcpStream::connect_timeout(&sa, Duration::from_secs(2)).ok()?;
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    write!(s, "GET {path} HTTP/1.0\r\nHost: {hostport}\r\n\r\n").ok()?;
+    let mut body = String::new();
+    s.read_to_string(&mut body).ok()?;
+    Some(body)
+}
+
+fn xml_field(xml: &str, tag: &str) -> Option<String> {
+    let start = xml.find(&format!("<{tag}>"))? + tag.len() + 2;
+    let end = xml[start..].find(&format!("</{tag}>"))? + start;
+    Some(xml[start..end].trim().to_string())
 }
 
 /// SMB and WebDAV over mDNS.
@@ -232,6 +288,22 @@ mod tests {
             found.iter().any(|f| f.kind == Kind::Smb && f.name == "Encheo Test NAS" && f.address.starts_with("smb://encheo-test-")),
             "{found:?}"
         );
+    }
+
+    #[test]
+    fn ssdp_replies() {
+        let r = b"HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: http://192.168.1.4:8200/rootDesc.xml\r\nST: urn:schemas-upnp-org:device:MediaServer:1\r\n\r\n";
+        assert_eq!(ssdp_location(r).as_deref(), Some("http://192.168.1.4:8200/rootDesc.xml"));
+        assert!(ssdp_location(b"HTTP/1.1 200 OK\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\nLOCATION: http://x/\r\n").is_none());
+        assert_eq!(xml_field("<root><friendlyName> NAS </friendlyName></root>", "friendlyName").as_deref(), Some("NAS"));
+    }
+
+    #[test]
+    fn reads_a_real_device_description() {
+        // The MiniDLNA test container, if it's running.
+        if let Some(desc) = http_get("http://127.0.0.1:8200/rootDesc.xml") {
+            assert_eq!(xml_field(&desc, "friendlyName").as_deref(), Some("Encheo Test DLNA"));
+        }
     }
 
     #[test]

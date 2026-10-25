@@ -180,7 +180,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// Ranged GETs in 1 MiB chunks.
-struct HttpFile {
+pub(crate) struct HttpFile {
     dav: reqwest::blocking::Client,
     url: url::Url,
     auth: Option<String>,
@@ -188,6 +188,12 @@ struct HttpFile {
     len: Option<u64>,
     buf: Vec<u8>,
     buf_start: u64,
+}
+
+impl HttpFile {
+    pub(crate) fn new(dav: reqwest::blocking::Client, url: url::Url, auth: Option<String>, len: Option<u64>) -> Self {
+        Self { dav, url, auth, pos: 0, len, buf: vec![], buf_start: 0 }
+    }
 }
 
 impl Read for HttpFile {

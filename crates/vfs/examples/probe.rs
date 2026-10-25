@@ -23,6 +23,8 @@ fn main() {
         "webdav" => Kind::WebDav,
         "sftp" => Kind::Sftp,
         "ftp" => Kind::Ftp,
+        "dlna" => Kind::Dlna,
+        "nfs" => Kind::Nfs,
         _ => Kind::Smb,
     };
     let config = Config {

@@ -732,7 +732,7 @@ component AddSourceDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
-                for k in [{ i: 2, t: "WebDAV" }, { i: 4, t: "SFTP" }, { i: 5, t: "FTP" }, { i: 6, t: "NFS" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
+                for k in [{ i: 2, t: "WebDAV" }, { i: 4, t: "SFTP" }, { i: 5, t: "FTP" }, { i: 6, t: "NFS" }, { i: 7, t: "DLNA" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
             }
             Text {
                 color: Theme.secondary;
@@ -744,15 +744,17 @@ component AddSourceDialog inherits Rectangle {
                     : root.kind == 3 ? "A Jellyfin or Emby server, e.g. http://192.168.1.10:8096. Your libraries appear in the sidebar."
                     : root.kind == 4 ? "A server you can reach over SSH, e.g. sftp://nas.local/volume1/video."
                     : root.kind == 5 ? "An FTP server, e.g. ftp://nas.local/video (ftps:// for encrypted)."
-                    : "An NFS export, e.g. nfs://nas.local/volume1/video. No sign-in needed.";
+                    : root.kind == 6 ? "An NFS export, e.g. nfs://nas.local/volume1/video. No sign-in needed."
+                    : "A DLNA/UPnP media server (many NAS boxes and TVs). Pick it from the list above when it shows up.";
             }
             Field {
                 label: root.kind == 0 ? "Folder" : "Address";
                 placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : root.kind == 2 ? "https://server/path"
-                    : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : root.kind == 5 ? "ftp://server/path" : "nfs://server/export";
+                    : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : root.kind == 5 ? "ftp://server/path"
+                    : root.kind == 6 ? "nfs://server/export" : "http://server:8200/rootDesc.xml";
                 text <=> root.location;
             }
-            if root.kind != 0 && root.kind != 6: HorizontalLayout {
+            if root.kind != 0 && root.kind != 6 && root.kind != 7: HorizontalLayout {
                 spacing: 12px;
                 Field { label: "User name"; placeholder: root.kind == 1 ? "guest" : ""; text <=> root.user; }
                 Field { label: "Password"; secret: true; text <=> root.password; }
