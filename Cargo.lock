@@ -171,6 +171,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1511,6 +1517,8 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "encheo-plex",
+ "nfs3_client",
+ "nfs3_server",
  "quick-xml 0.42.0",
  "reqwest",
  "russh",
@@ -3704,6 +3712,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "nfs3_client"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48ce4bd533d749ddf240f98c405e1bb628957d1d0703c9c79fe67fe4cc7e012e"
+dependencies = [
+ "fastrand",
+ "nfs3_types",
+ "tokio",
+]
+
+[[package]]
+name = "nfs3_macros"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c65db184648a6ca6b3512baea5c372e0496f0af93473231b745563200926ca6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "nfs3_server"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43ae7bcd031d9b87b738e3a66db5e057bd1a109fca96779a5067b409c728bdde"
+dependencies = [
+ "anyhow",
+ "nfs3_types",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nfs3_types"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "252b9bcc45b1f8fa853c7358243e6cdc24473b3eb877b65da87e7daf75003bf9"
+dependencies = [
+ "nfs3_macros",
 ]
 
 [[package]]

@@ -369,6 +369,7 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
         1 => Kind::Smb,
         4 => Kind::Sftp,
         5 => Kind::Ftp,
+        6 => Kind::Nfs,
         _ => Kind::WebDav,
     };
     let location = location.trim().to_string();

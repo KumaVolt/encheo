@@ -723,10 +723,16 @@ component AddSourceDialog inherits Rectangle {
                     }
                 }
             }
+            // Two rows: media servers and the common shares first.
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
-                for k[i] in ["Folder", "SMB", "WebDAV", "Jellyfin/Emby", "SFTP", "FTP"]: Chip { text: k; active: root.kind == i; clicked => { root.kind = i; } }
+                for k in [{ i: 3, t: "Jellyfin / Emby" }, { i: 1, t: "SMB" }, { i: 0, t: "Folder" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                for k in [{ i: 2, t: "WebDAV" }, { i: 4, t: "SFTP" }, { i: 5, t: "FTP" }, { i: 6, t: "NFS" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
             }
             Text {
                 color: Theme.secondary;
@@ -737,15 +743,16 @@ component AddSourceDialog inherits Rectangle {
                     : root.kind == 2 ? "A WebDAV server, e.g. https://nas.local:5006/video."
                     : root.kind == 3 ? "A Jellyfin or Emby server, e.g. http://192.168.1.10:8096. Your libraries appear in the sidebar."
                     : root.kind == 4 ? "A server you can reach over SSH, e.g. sftp://nas.local/volume1/video."
-                    : "An FTP server, e.g. ftp://nas.local/video (ftps:// for encrypted).";
+                    : root.kind == 5 ? "An FTP server, e.g. ftp://nas.local/video (ftps:// for encrypted)."
+                    : "An NFS export, e.g. nfs://nas.local/volume1/video. No sign-in needed.";
             }
             Field {
                 label: root.kind == 0 ? "Folder" : "Address";
                 placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : root.kind == 2 ? "https://server/path"
-                    : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : "ftp://server/path";
+                    : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : root.kind == 5 ? "ftp://server/path" : "nfs://server/export";
                 text <=> root.location;
             }
-            if root.kind != 0: HorizontalLayout {
+            if root.kind != 0 && root.kind != 6: HorizontalLayout {
                 spacing: 12px;
                 Field { label: "User name"; placeholder: root.kind == 1 ? "guest" : ""; text <=> root.user; }
                 Field { label: "Password"; secret: true; text <=> root.password; }

@@ -9,6 +9,7 @@
 mod ftp;
 mod local;
 pub mod names;
+mod nfs;
 mod sftp;
 mod smb;
 mod webdav;
@@ -40,6 +41,7 @@ pub enum Kind {
     Smb,
     Sftp,
     Ftp,
+    Nfs,
 }
 
 impl Kind {
@@ -50,6 +52,7 @@ impl Kind {
             Kind::Smb => "SMB",
             Kind::Sftp => "SFTP",
             Kind::Ftp => "FTP",
+            Kind::Nfs => "NFS",
         }
     }
 }
@@ -133,6 +136,7 @@ pub enum Source {
     Smb(smb::Smb),
     Sftp(sftp::Sftp),
     Ftp(ftp::Ftp),
+    Nfs(nfs::Nfs),
 }
 
 impl Source {
@@ -144,6 +148,7 @@ impl Source {
             Kind::Smb => Source::Smb(smb::Smb::connect(config)?),
             Kind::Sftp => Source::Sftp(sftp::Sftp::connect(config)?),
             Kind::Ftp => Source::Ftp(ftp::Ftp::connect(config)?),
+            Kind::Nfs => Source::Nfs(nfs::Nfs::connect(config)?),
         };
         source.list("")?;
         Ok(source)
@@ -157,6 +162,7 @@ impl Source {
             Source::Smb(s) => s.list(path)?,
             Source::Sftp(s) => s.list(path)?,
             Source::Ftp(s) => s.list(path)?,
+            Source::Nfs(s) => s.list(path)?,
         };
         entries.retain(|e| !e.name.starts_with('.') && (e.is_dir || e.media_kind().is_some()));
         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| names::natural_cmp(&a.name, &b.name)));
@@ -171,6 +177,7 @@ impl Source {
             Source::Smb(s) => s.list(path),
             Source::Sftp(s) => s.list(path),
             Source::Ftp(s) => s.list(path),
+            Source::Nfs(s) => s.list(path),
         }
     }
 
@@ -181,6 +188,7 @@ impl Source {
             Source::Smb(s) => s.open(path),
             Source::Sftp(s) => s.open(path),
             Source::Ftp(s) => s.open(path),
+            Source::Nfs(s) => s.open(path),
         }
     }
 
@@ -189,7 +197,7 @@ impl Source {
         match self {
             Source::Local(s) => Some(s.direct_url(path)),
             Source::WebDav(s) => Some(s.direct_url(path)),
-            Source::Smb(_) | Source::Sftp(_) | Source::Ftp(_) => None,
+            Source::Smb(_) | Source::Sftp(_) | Source::Ftp(_) | Source::Nfs(_) => None,
         }
     }
 
