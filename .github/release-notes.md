@@ -1,11 +1,16 @@
 Preview of Encheo, an open-source media player for Windows, Linux, macOS and Android (phones and
 Android TV). Early software: expect rough edges.
 
-## New in 0.1.1
+## New in 0.2.0
 
-- **New licence: Mozilla Public License 2.0** (was GPL-3.0). The code stays open; this also makes
-  app store releases possible (iOS later). 0.1.0 remains available under GPL-3.0.
-- **About screen** (ⓘ in the sidebar) with version, licence and credits.
+- **Find subtitles online** from the player's settings: through your Plex server (OpenSubtitles),
+  or Jellyfin/Emby with a subtitle plugin. The subtitle is saved on the server for every app.
+- **Subtitle size**, **subtitle delay** and **audio delay** in the player
+- **Auto-skip intros and credits** (a switch in the player's settings)
+- **Search inside file sources** (SMB, NFS, SFTP, FTP, WebDAV, DLNA, folders), alongside your
+  media servers
+- **Favourites**: a heart on the details page and a Favourites row on the home screen
+- Licence: now **Mozilla Public License 2.0** (0.1.0 remains GPL-3.0); About screen with credits
 
 ## What's in it
 

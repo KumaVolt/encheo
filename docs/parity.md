@@ -34,10 +34,11 @@ macOS and Android** (phones and Android TV included), and where Encheo stands.
 | Ratings (IMDb, Rotten Tomatoes, TMDB) | ✓ | From Plex and Jellyfin/Emby |
 | Cast and crew, related titles | ✓ | |
 | Home: Continue Watching, Recently Added per library, Watchlist | ✓ | Recently Added groups episodes into their show |
-| Reorderable home sections, favourites, collections, playlists | → | |
+| Favourites | ✓ | Kept on the device; a row on the home screen |
+| Reorderable home sections, collections, playlists | → | |
 | Up Next, watched state, resume points | ✓ | Servers keep their own; files tracked locally |
 | Extras (trailers, featurettes) | → | |
-| Search | ◐ | Across all media servers; not inside file sources yet |
+| Search | ✓ | Media servers and file sources (file lists collected on the first search) |
 | Downloads for offline playback | → | Matters most on Android phones |
 
 ## Playback
@@ -53,11 +54,12 @@ All decoding and rendering is libmpv, so format coverage is FFmpeg's.
 | Subtitles: SRT, ASS/SSA, PGS, VobSub | ✓ | Rendered by mpv (libass); external server subtitles loaded |
 | Subtitle language detection for untagged tracks | ✓ | From the subtitle text, offline |
 | Audio/subtitle choice remembered per show (by language) | ✓ | Also saved to the show's Plex settings |
-| Subtitle font picker, user fonts, style settings | → | |
-| Subtitle/audio delay | → | |
-| OpenSubtitles search and download | → | Needs an API key |
+| Subtitle size | ✓ | |
+| Subtitle font picker, user fonts, colours | → | |
+| Subtitle/audio delay | ✓ | 0.1 s steps |
+| Online subtitle search | ◐ | Through Plex (OpenSubtitles), or Jellyfin/Emby with a subtitle plugin. Files from shares (→, needs our own key) |
 | Simplified ↔ traditional Chinese subtitle conversion | → | |
-| Skip intro / credits | ✓ | From server markers. Auto-skip (→) |
+| Skip intro / credits | ✓ | From server markers; optional auto-skip |
 | Next episode autoplay, episode list, chapters | ✓ | |
 | Speed control without pitch change | ✓ | |
 | Frame-rate and dynamic-range matching | → | Android TV first |
