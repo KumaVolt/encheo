@@ -9,14 +9,17 @@ macOS and Android** (phones and Android TV included), and where Encheo stands.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Local files and folders | → | Phase 2 |
-| SMB, WebDAV | → | Phase 2. Rust clients feeding mpv through stream callbacks |
-| NFS, SFTP/FTP, UPnP/DLNA | → | Later |
-| Server discovery on the local network, connection speed test | → | mDNS/NetBIOS |
-| Jellyfin, Emby | → | Phase 4. Jellyfin first: open API, the users most likely to switch |
-| Plex (PIN login, managed users, watchlist) | → | Phase 4. Direct play first, server transcoding as fallback |
-| Dropbox, OneDrive | → | Later. Need registered OAuth apps |
-| Google Drive | → | Browsing a user's whole Drive needs a "restricted" scope, and Google requires a paid security assessment before a public app may use it. Plan for that, or ship it as bring-your-own-API-key |
+| Plex (PIN sign-in, servers, libraries, watchlist) | ✓ | Direct play. Managed-user switching left out on purpose: the signed-in user is the viewer |
+| Jellyfin, Emby | ✓ | One client for both; resume points, watched state, intro/credits (Jellyfin media segments) |
+| Local folders | ✓ | Desktop. Android needs storage permission handling (→) |
+| SMB, WebDAV | ✓ | Pure-Rust SMB2/3; WebDAV played directly over HTTP |
+| SFTP, FTP/FTPS | ✓ | SFTP host key pinned on first connect |
+| NFSv3 | ✓ | Tries a privileged port first, explains the NAS setting otherwise |
+| DLNA/UPnP | ✓ | |
+| Discovery on the local network | ✓ | Jellyfin/Emby (UDP 7359), Plex (GDM), SMB/WebDAV (mDNS), DLNA (SSDP). NetBIOS-only SMB servers aren't found (→) |
+| Connection speed test | ✓ | Reads a real video from the source |
+| Dropbox, OneDrive | → | Need registered OAuth apps |
+| Google Drive | → | Browsing a whole Drive needs a "restricted" scope and Google's paid security assessment; or bring-your-own-API-key |
 | Other cloud drives (Box, pCloud, Mega, Yandex…) | ? | On demand |
 | Bookmarks and deep links into folders | → | |
 
@@ -24,16 +27,17 @@ macOS and Android** (phones and Android TV included), and where Encheo stands.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Filename → movie/episode matching | → | The core of the "it just looks nice" feel. Needs a big filename test corpus |
-| TMDB metadata, artwork, collections, cast and crew | → | Free for non-commercial use; a paid hosted service would need TMDB's commercial terms |
+| Filename → movie/episode parsing | ◐ | Parser done (scene names, SxxEyy, 1x05, anime "Show - 07"); used for titles in file sources |
+| TMDB metadata and artwork for file sources | → | Free for non-commercial use with attribution |
 | Fix match, reload metadata, per-folder language | → | |
-| Embedded tags (MKV/MP4), Kodi `.nfo` files | → | NFO helps Kodi switchers |
-| Ratings (IMDb, Rotten Tomatoes) | → | Through Trakt or OMDb |
-| Quick and full indexing, incremental refresh | → | |
+| Embedded tags (MKV/MP4), Kodi `.nfo` files | → | |
+| Ratings (IMDb, Rotten Tomatoes, TMDB) | ✓ | From Plex and Jellyfin/Emby |
+| Cast and crew, related titles | ✓ | |
+| Home: Continue Watching, Recently Added per library, Watchlist | ✓ | Recently Added groups episodes into their show |
 | Reorderable home sections, favourites, collections, playlists | → | |
-| Up Next, watched state, resume points | → | |
+| Up Next, watched state, resume points | ✓ | Servers keep their own; files tracked locally |
 | Extras (trailers, featurettes) | → | |
-| Search across every source | → | |
+| Search | ◐ | Across all media servers; not inside file sources yet |
 | Downloads for offline playback | → | Matters most on Android phones |
 
 ## Playback
@@ -42,32 +46,37 @@ All decoding and rendering is libmpv, so format coverage is FFmpeg's.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Containers: MKV, MP4/MOV, TS/M2TS, AVI, WMV/ASF, FLV, OGM, WebM, VOB, MXF, RMVB | → | Through mpv |
-| Video: H.264, HEVC, AV1, VP9, MPEG-2, VC-1, MPEG-4 Part 2 | → | Hardware decode per OS; required for 4K on Android |
-| Audio: AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, Opus, MP3, PCM | → | Decode, or passthrough to a receiver |
+| Containers and codecs (MKV, MP4, TS, AVI, WMV…; H.264, HEVC, AV1, VP9, VC-1…; AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC…) | ✓ | Hardware decoding on each OS |
+| Audio passthrough to a receiver | → | |
 | Disc images (ISO, BDMV, VIDEO_TS) | → | Main title. ✗ Disc menus |
-| HDR10, HLG; Dolby Vision as HDR10 / tone-mapped | ◐ | Passthrough on Android TV; desktop tone-maps until the native-window mode |
-| Subtitles: SRT, ASS/SSA, PGS, VobSub, SMI | → | Rendered by mpv (libass) |
+| HDR10, HLG; Dolby Vision as HDR10 / tone-mapped | ◐ | Detected and labelled; tone-mapped on desktop |
+| Subtitles: SRT, ASS/SSA, PGS, VobSub | ✓ | Rendered by mpv (libass); external server subtitles loaded |
+| Subtitle language detection for untagged tracks | ✓ | From the subtitle text, offline |
+| Audio/subtitle choice remembered per show (by language) | ✓ | Also saved to the show's Plex settings |
 | Subtitle font picker, user fonts, style settings | → | |
+| Subtitle/audio delay | → | |
 | OpenSubtitles search and download | → | Needs an API key |
-| Simplified ↔ traditional Chinese subtitle conversion | → | OpenCC data |
-| Skip intro / credits from server markers, auto-skip | → | |
-| Speed control without pitch change | → | mpv `scaletempo2` |
-| Audio/subtitle delay; track choices remembered per show | → | |
+| Simplified ↔ traditional Chinese subtitle conversion | → | |
+| Skip intro / credits | ✓ | From server markers. Auto-skip (→) |
+| Next episode autoplay, episode list, chapters | ✓ | |
+| Speed control without pitch change | ✓ | |
 | Frame-rate and dynamic-range matching | → | Android TV first |
-| Picture in Picture | → | Android and desktop |
+| Picture in Picture | ◐ | Desktop. Android (→) |
 | Upscaling, ambient glow around the video | → | mpv shaders |
-| Google Cast | → | Chromecasts can't play MKV, TrueHD or DTS, so the sender has to remux or transcode on the fly. Desktop speaks the Cast protocol directly; Android's official SDK needs Google Play services, so not in the F-Droid build |
-| Play to smart TVs over DLNA | ? | Open protocol, many TVs support it; same remux problem as Cast |
-| AirPlay | ✗ | Apple TVs only accept it from Apple devices without a fragile reverse-engineered client. Revisit later |
-| Keyboard shortcuts, remappable | → | |
+| Google Cast | → | Chromecasts can't play MKV, TrueHD or DTS: needs remux/transcode on the fly |
+| Play to smart TVs over DLNA | ? | Same remux problem as Cast |
+| AirPlay | ✗ | Apple TVs only reliably accept it from Apple devices |
+| Keyboard shortcuts | ✓ | Space, arrows, F, M, N, P, Esc. Remapping (→) |
+| TV remote (D-pad) navigation | ✓ | |
 
 ## App
 
 | Feature | Status | Notes |
 |---|---|---|
+| macOS, Windows, Linux, Android phone, Android TV | ◐ | All build in CI; macOS and Android tested; Windows and Linux untested |
 | Profiles with passcode | → | |
 | Trakt scrobbling and sync | → | |
 | Sync of settings, history, favourites, home layout and sources across devices | → | Optional; source passwords end-to-end encrypted |
+| Credentials in the OS keychain | → | Stored in a file only the user can read for now |
 | Onboarding | → | |
 | Analytics | ✗ | None. Opt-in crash reports only |
