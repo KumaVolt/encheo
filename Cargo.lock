@@ -1204,6 +1204,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "encheo-jellyfin"
+version = "0.1.0"
+dependencies = [
+ "encheo-plex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "encheo-plex"
 version = "0.1.0"
 dependencies = [
