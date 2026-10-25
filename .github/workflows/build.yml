@@ -79,6 +79,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p encheo
+      # iOS: compile check only (no playback yet, not signed).
+      - run: rustup target add aarch64-apple-ios && cargo build --locked -p encheo --bin encheo --target aarch64-apple-ios
       - name: Package
         run: |
           APP=dist/Encheo.app

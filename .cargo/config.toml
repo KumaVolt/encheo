@@ -1,0 +1,4 @@
+
+[env]
+# iOS: the same minimum version for Rust and the C libraries it builds (matches Info.plist).
+IPHONEOS_DEPLOYMENT_TARGET = "16.0"
