@@ -79,13 +79,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p encheo
-      # iOS: compile check only (not signed yet). libmpv from MPVKit, cached.
+      # iOS: an unsigned .ipa for sideloading. libmpv from MPVKit, cached.
       - uses: actions/cache@v4
         with:
           path: apps/encheo/ios-libs
           key: ios-libs-${{ hashFiles('scripts/ios-libs.sh') }}
       - run: scripts/ios-libs.sh && rm -rf apps/encheo/ios-libs/zips
-      - run: rustup target add aarch64-apple-ios && cargo build --locked -p encheo --bin encheo --target aarch64-apple-ios
+      - run: rustup target add aarch64-apple-ios && scripts/ios.sh ipa
       - name: Package
         run: |
           APP=dist/Encheo.app
@@ -99,7 +99,7 @@ jobs:
             <key>CFBundleIdentifier</key><string>app.encheo</string>
             <key>CFBundleExecutable</key><string>Encheo</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>CFBundleShortVersionString</key><string>$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
@@ -109,6 +109,10 @@ jobs:
         with:
           name: encheo-macos-arm64
           path: encheo-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-ios
+          path: target/ios/encheo-ios.ipa
 
   android:
     runs-on: ubuntu-24.04
