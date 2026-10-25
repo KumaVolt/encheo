@@ -1187,6 +1187,7 @@ name = "encheo"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "encheo-jellyfin",
  "encheo-plex",
  "encheo-sublang",
  "encheo-vfs",

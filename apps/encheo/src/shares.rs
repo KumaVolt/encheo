@@ -37,7 +37,7 @@ pub(crate) fn library_entries() -> Vec<(String, LibraryEntry)> {
             .enumerate()
             .map(|(i, c)| {
                 let key = format!("share:{i}");
-                (key.clone(), LibraryEntry { key: key.into(), title: c.name.clone().into(), kind: "folder".into() })
+                (key.clone(), LibraryEntry { key: key.into(), title: c.name.clone().into(), kind: "folder".into(), group: "Sources".into() })
             })
             .collect()
     })
@@ -361,6 +361,9 @@ pub(crate) fn open_reader(item: &Item) -> Option<Box<dyn encheo_vfs::ReadSeek>> 
 
 /// The add-source form was submitted: connect, and keep it if that works.
 pub(crate) fn add_source(kind: i32, name: String, location: String, username: String, password: String) {
+    if kind == 3 {
+        return add_media_server(location, username, password);
+    }
     let kind = match kind {
         0 => Kind::Local,
         1 => Kind::Smb,
@@ -404,14 +407,58 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
     });
 }
 
+/// Sign in to a Jellyfin or Emby server and add its libraries.
+fn add_media_server(address: String, username: String, password: String) {
+    let ui = ui();
+    ui.set_add_source_busy(true);
+    ui.set_add_source_status("Signing in…".into());
+    let client = with_state(|s| backend::jf_client(&s.session));
+    rt().spawn(async move {
+        let result = encheo_jellyfin::sign_in(&address, username.trim(), &password, &client).await;
+        on_ui(move |ui| {
+            ui.set_add_source_busy(false);
+            match result {
+                Ok(login) => {
+                    ui.set_add_source_open(false);
+                    ui.set_add_source_status(SharedString::new());
+                    with_state(|s| {
+                        // Signing in again to the same server replaces the old login.
+                        s.session.media_servers.retain(|l| !(l.base_url == login.base_url && l.user_id == login.user_id));
+                        s.session.media_servers.push(login);
+                        s.session.save();
+                        s.items.clear();
+                    });
+                    backend::load_jf_servers();
+                    enter_home();
+                }
+                Err(e) => ui.set_add_source_status(format!("{e}").into()),
+            }
+        });
+    });
+}
+
 fn default_name(kind: Kind, location: &str) -> String {
     let trimmed = location.trim_end_matches(['/', '\\']);
     let last = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
     if last.is_empty() || last.contains(':') { kind.label().to_string() } else { last.to_string() }
 }
 
-/// Remove the source being shown.
+/// Remove the source being shown: a file source, or the Jellyfin/Emby server of the library.
 pub(crate) fn remove_current() {
+    let ui = ui();
+    let lib = ui.get_selected_library();
+    let key = with_state(|s| s.library_keys.get(lib.max(0) as usize).cloned()).unwrap_or_default();
+    if let Some(n) = key.strip_prefix("jf").and_then(|r| r.split_once(':')).and_then(|(n, _)| n.parse::<usize>().ok()) {
+        with_state(|s| {
+            if n < s.session.media_servers.len() {
+                s.session.media_servers.remove(n);
+                s.session.save();
+            }
+            s.items.clear();
+        });
+        backend::load_jf_servers();
+        return select_library(-1);
+    }
     let Some((index, _)) = with_state(|s| s.share_view.clone()) else { return };
     with_state(|s| {
         if index < s.session.sources.len() {

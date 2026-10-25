@@ -15,6 +15,12 @@ pub struct Session {
     /// File sources (folders, WebDAV, SMB) the user added.
     #[serde(default)]
     pub sources: Vec<encheo_vfs::Config>,
+    /// Jellyfin and Emby servers the user signed in to.
+    #[serde(default)]
+    pub media_servers: Vec<encheo_jellyfin::Login>,
+    /// The user chose to use Encheo without Plex.
+    #[serde(default)]
+    pub skip_plex: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

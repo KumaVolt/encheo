@@ -3,6 +3,7 @@
 //! Threads: the UI thread owns all Slint objects and the app state (thread-locals below). Network
 //! and decoding run on a tokio runtime; results come back through `on_ui`.
 
+mod backend;
 mod images;
 mod langs;
 mod progress;
@@ -12,6 +13,7 @@ mod session;
 
 use encheo_plex::{ClientInfo, Item, ItemKind, MarkerKind, PlayState, Plex, Server, Stream, StreamKind};
 use player::{Player, clock};
+use backend::{Backend, all_backends, backend_for};
 use session::{SavedServer, Session};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
@@ -50,6 +52,8 @@ struct Models {
 struct State {
     session: Session,
     server: Option<Server>,
+    /// Jellyfin/Emby servers, in `session.media_servers` order.
+    jf_servers: Vec<encheo_jellyfin::Server>,
     library_keys: Vec<String>,
     library_kinds: Vec<String>,
     /// The file source and folder shown in the grid, if a file source is selected.
@@ -187,6 +191,7 @@ fn begin_signin() {
                 Ok(token) => {
                     with_state(|s| {
                         s.session.token = Some(token.clone());
+                        s.session.skip_plex = false;
                         s.session.save();
                     });
                     ui.set_signin_status("Signed in. Finding your servers…".into());
@@ -243,8 +248,12 @@ fn server_failed(ui: &AppWindow, msg: String) {
 
 /// Start up from a saved session: try the last address first, rediscover if it moved.
 fn resume_session() {
-    let (plex, token, saved) = with_state(|s| (plex(&s.session), s.session.token.clone(), s.session.server.clone()));
-    let Some(token) = token else { return begin_signin() };
+    let (plex, token, saved, skip) = with_state(|s| (plex(&s.session), s.session.token.clone(), s.session.server.clone(), s.session.skip_plex));
+    let Some(token) = token else {
+        // Without Plex: straight home if the user chose that (or has other sources).
+        let others = with_state(|s| !s.session.media_servers.is_empty() || !s.session.sources.is_empty());
+        return if skip || others { enter_home() } else { begin_signin() };
+    };
     let Some(saved) = saved else { return choose_server(token, None) };
     let server = plex.server_at(&saved.name, &saved.base_url, &saved.token);
     ui().set_screen("home".into());
@@ -285,10 +294,15 @@ fn load_profile() {
 fn enter_home() {
     load_profile();
     with_state(|s| s.share_view = None);
-    ui().set_grid_can_remove(false);
-    let Some(server) = server() else { return };
     let ui = ui();
-    ui.set_server_name(server.name().into());
+    ui.set_grid_can_remove(false);
+    let backends = all_backends();
+    ui.set_server_name(backends.iter().map(Backend::label).collect::<Vec<_>>().join(", ").into());
+    ui.set_server_kind(match backends.as_slice() {
+        [] => SharedString::new(),
+        [b] => b.kind_label().into(),
+        _ => "Media servers".into(),
+    });
     ui.set_screen("home".into());
     ui.set_selected_library(-1);
     ui.set_loading(true);
@@ -297,32 +311,41 @@ fn enter_home() {
         s.generation
     });
     rt().spawn(async move {
-        let libs = server.libraries().await;
-        let on_deck = server.on_deck().await.unwrap_or_default();
-        // One "Recently Added" shelf per library, in sidebar order.
-        let mut recent: Vec<(usize, String, String, Vec<Item>)> = Vec::new();
-        if let Ok(libs) = &libs {
-            for (i, l) in libs.iter().enumerate() {
-                let items = server.recently_added(&l.key, 24).await.unwrap_or_default();
-                if !items.is_empty() {
-                    recent.push((i, l.title.clone(), l.kind.clone(), items));
+        // Per server: its libraries (with their recently added items) and what's in progress.
+        let several = backends.len() > 1;
+        let mut libs: Vec<(String, encheo_plex::Library, Vec<Item>)> = Vec::new();
+        let mut on_deck = Vec::new();
+        let mut errors = Vec::new();
+        for b in &backends {
+            match b.libraries().await {
+                Ok(list) => {
+                    for l in list {
+                        let recent = b.recently_added(&l.key, 24).await.unwrap_or_default();
+                        libs.push((b.label(), l, recent));
+                    }
                 }
+                Err(e) => errors.push(format!("{}: {e}", b.label())),
             }
+            on_deck.extend(b.on_deck().await.unwrap_or_default());
         }
         on_ui(move |ui| {
             ui.set_loading(false);
-            let libs = match libs {
-                Ok(l) => l,
-                Err(e) => return toast(ui, format!("Couldn't load libraries: {e}")),
-            };
+            if !errors.is_empty() {
+                toast(ui, format!("Couldn't load {}", errors.join("; ")));
+            }
             with_state(|s| {
-                s.library_keys = libs.iter().map(|l| l.key.clone()).collect();
-                s.library_kinds = libs.iter().map(|l| l.kind.clone()).collect();
+                s.library_keys = libs.iter().map(|(_, l, _)| l.key.clone()).collect();
+                s.library_kinds = libs.iter().map(|(_, l, _)| l.kind.clone()).collect();
             });
             with_models(|m| {
                 m.libraries.set_vec(
                     libs.iter()
-                        .map(|l| LibraryEntry { key: l.key.clone().into(), title: l.title.clone().into(), kind: l.kind.clone().into() })
+                        .map(|(group, l, _)| LibraryEntry {
+                            key: l.key.clone().into(),
+                            title: l.title.clone().into(),
+                            kind: l.kind.clone().into(),
+                            group: group.clone().into(),
+                        })
                         .collect::<Vec<_>>(),
                 )
             });
@@ -330,24 +353,28 @@ fn enter_home() {
             if with_state(|s| s.generation) != generation {
                 return;
             }
-            // Files from shares first (most recent), then the server's on-deck items.
+            // Files from shares first (most recent), then the servers' in-progress items.
             let (file_posters, file_items): (Vec<Poster>, Vec<Item>) = shares::continue_watching().into_iter().unzip();
             remember(file_items);
             let cw: Vec<Poster> = file_posters.into_iter().chain(on_deck.iter().map(|i| poster(i, true))).collect();
             let mut rows = Vec::new();
             let mut row_models = Vec::new();
-            for (index, title, kind, items) in &recent {
+            for (index, (group, l, items)) in libs.iter().enumerate() {
+                if items.is_empty() {
+                    continue;
+                }
                 let model = Rc::new(VecModel::from(items.iter().map(|i| poster(i, false)).collect::<Vec<_>>()));
+                let title = if several { format!("Recently Added in {} · {group}", l.title) } else { format!("Recently Added in {}", l.title) };
                 rows.push(HomeRow {
-                    title: format!("Recently Added in {title}").into(),
-                    library: *index as i32,
+                    title: title.into(),
+                    library: index as i32,
                     landscape: false,
-                    square: kind == "artist",
+                    square: l.kind == "artist",
                     items: ModelRc::from(model.clone()),
                 });
                 row_models.push(model);
             }
-            remember(on_deck.into_iter().chain(recent.into_iter().flat_map(|(_, _, _, items)| items)));
+            remember(on_deck.into_iter().chain(libs.into_iter().flat_map(|(_, _, items)| items)));
             with_models(|m| {
                 m.continue_watching.set_vec(cw);
                 *m.row_models.borrow_mut() = row_models;
@@ -375,13 +402,15 @@ fn select_library(index: i32) {
         return shares::browse(si, String::new());
     }
     with_state(|s| s.share_view = None);
-    ui.set_grid_can_remove(false);
-    let Some(server) = server() else { return };
     let (key, kind, generation) = with_state(|s| {
         s.generation += 1;
         (s.library_keys.get(index as usize).cloned(), s.library_kinds.get(index as usize).cloned(), s.generation)
     });
     let Some(key) = key else { return };
+    let Some(server) = backend_for(&key) else { return };
+    // Jellyfin/Emby servers can be removed from any of their libraries.
+    ui.set_grid_can_remove(matches!(server, Backend::Jf(_)));
+    let kind_str = kind.clone().unwrap_or_default();
     ui.set_grid_square(kind.as_deref() == Some("artist"));
     let title = with_models(|m| m.libraries.row_data(index as usize).map(|l| l.title)).unwrap_or_default();
     ui.set_grid_title(title);
@@ -390,7 +419,7 @@ fn select_library(index: i32) {
     rt().spawn(async move {
         let mut start = 0;
         loop {
-            let page = server.library_items(&key, start, PAGE).await;
+            let page = server.library_items(&key, &kind_str, start, PAGE).await;
             let done = match &page {
                 Ok(p) => p.items.len() < PAGE as usize || p.total.is_some_and(|t| start + PAGE >= t),
                 Err(_) => true,
@@ -483,8 +512,10 @@ fn poster(item: &Item, landscape: bool) -> Poster {
 }
 
 fn art_url(path: Option<&str>, w: u32, h: u32) -> String {
-    match (path, server()) {
-        (Some(p), Some(s)) if !p.is_empty() => s.image_url(p, w, h),
+    match path {
+        // Jellyfin/Emby give full image URLs; ask for the size we need.
+        Some(p) if p.starts_with("http") => format!("{p}&maxWidth={w}&maxHeight={h}"),
+        Some(p) if !p.is_empty() => server().map(|s| s.image_url(p, w, h)).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -642,7 +673,7 @@ fn show_detail(item: Item) {
     with_state(|s| s.album_tracks.clear());
     ui.set_screen("detail".into());
 
-    let Some(server) = server() else { return };
+    let Some(server) = backend_for(&item.rating_key) else { return };
     let generation = with_state(|s| s.generation);
     let id = item.rating_key.clone();
     let is_show = item.kind == ItemKind::Show;
@@ -885,7 +916,7 @@ fn select_season(index: i32) {
     let ui = ui();
     ui.set_selected_season(index);
     let Some(season) = with_state(|s| s.season_items.get(index as usize).cloned()) else { return };
-    let Some(server) = server() else { return };
+    let Some(server) = backend_for(&season.rating_key) else { return };
     let generation = with_state(|s| s.generation);
     rt().spawn(async move {
         let eps = server.children(&season.rating_key).await.unwrap_or_default();
@@ -926,19 +957,19 @@ fn play_from_start() {
 }
 
 fn toggle_watched() {
-    let Some(server) = server() else { return };
     let Some(item) = with_state(|s| s.detail.clone()) else { return };
+    let Some(server) = backend_for(&item.rating_key) else { return };
     let watched = item.is_watched();
     let id = item.rating_key.clone();
     ui().set_detail_watched(!watched);
     rt().spawn(async move {
-        let r = if watched { server.mark_unwatched(&id).await } else { server.mark_watched(&id).await };
+        let r = server.set_watched(&id, !watched).await;
         on_ui(move |ui| match r {
             // Reload, so episode ticks, progress and the play button follow.
             Ok(()) => show_detail(item),
             Err(e) => {
                 ui.set_detail_watched(watched);
-                toast(ui, format!("Couldn't update Plex: {e}"));
+                toast(ui, format!("Couldn't update the server: {e}"));
             }
         });
     });
@@ -976,7 +1007,7 @@ fn play_opts(item: Item, from_start: bool) {
     if shares::play_item(&item) {
         return;
     }
-    let Some(server) = server() else { return };
+    let Some(server) = backend_for(&item.rating_key) else { return };
     let ui = ui();
     let back_to = ui.get_screen().to_string();
     if back_to != "player" {
@@ -996,7 +1027,7 @@ fn play_opts(item: Item, from_start: bool) {
             _ => vec![],
         };
         let show_settings = match (&full.kind, &full.grandparent_rating_key) {
-            (ItemKind::Episode, Some(show)) => server.preferences(show).await.unwrap_or_default(),
+            (ItemKind::Episode, Some(show)) => server.preferences(show).await,
             _ => vec![],
         };
         on_ui(move |ui| {
@@ -1006,7 +1037,7 @@ fn play_opts(item: Item, from_start: bool) {
                 return toast(ui, "Nothing to play: this item has no file.");
             };
             let Some(p) = player() else { return toast(ui, "The video player didn't start (libmpv missing?).") };
-            let url = server.stream_url(part);
+            let Some(url) = server.stream_url(&full) else { return };
             let (title, subtitle) = if full.kind == ItemKind::Episode {
                 (
                     full.grandparent_title.clone().unwrap_or_default(),
@@ -1034,6 +1065,10 @@ fn play_opts(item: Item, from_start: bool) {
                 }
             }
             remember([full.clone()]);
+            {
+                let (server, item) = (server.clone(), full.clone());
+                rt().spawn(async move { server.report_start(&item).await });
+            }
             let server_id = with_state(|s| s.session.server.as_ref().map(|sv| sv.client_identifier.clone())).unwrap_or_default();
             let show_key = full.grandparent_rating_key.as_ref().filter(|_| full.kind == ItemKind::Episode).map(|show| format!("{server_id}:{show}"));
             let show_languages = match &show_key {
@@ -1110,8 +1145,7 @@ fn report_item(item: Item, state: PlayState, position: f64) {
     if shares::is_share_id(&item.rating_key) {
         return shares::record_progress(&item, position);
     }
-    let _ = state;
-    let Some(server) = server() else { return };
+    let Some(server) = backend_for(&item.rating_key) else { return };
     rt().spawn(async move {
         let _ = server.report_progress(&item, state, (position * 1000.0) as u64).await;
     });
@@ -1325,7 +1359,7 @@ fn detect_subtitle_languages(p: &Player) {
     if untagged.is_empty() {
         return;
     }
-    let Some((part_id, part_key, item_id)) = with_state(|s| {
+    let Some((part_id, _part_key, item_id)) = with_state(|s| {
         let np = s.now_playing.as_ref()?;
         let part = np.item.primary_part()?;
         Some((part.id, part.clone(), np.item.rating_key.clone()))
@@ -1339,10 +1373,13 @@ fn detect_subtitle_languages(p: &Player) {
     let share_item = with_state(|s| s.now_playing.as_ref().map(|n| n.item.clone())).filter(|i| shares::is_share_id(&i.rating_key));
     let url = match share_item {
         Some(_) => None,
-        None => match server() {
-            Some(server) => Some(server.stream_url(&part_key)),
-            None => return,
-        },
+        None => {
+            let item = with_state(|s| s.now_playing.as_ref().map(|n| n.item.clone()));
+            match item.and_then(|i| backend_for(&i.rating_key).and_then(|b| b.stream_url(&i))) {
+                Some(u) => Some(u),
+                None => return,
+            }
+        }
     };
     rt().spawn_blocking(move || {
         let started = Instant::now();
@@ -1485,7 +1522,7 @@ fn remember_show_language(kind: StreamKind, mpv_id: Option<i64>) {
     });
     let values = langs_now.to_plex(&settings);
     let show = key.split_once(':').map(|(_, show)| show.to_string()).unwrap_or_default();
-    if let (Some(server), false) = (server(), values.is_empty()) {
+    if let (Some(server), false) = (backend_for(&show), values.is_empty()) {
         rt().spawn(async move {
             let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
             if let Err(e) = server.set_preferences(&show, &pairs).await {
@@ -1521,7 +1558,8 @@ fn choose_track_inner(kind: StreamKind, mpv_id: Option<i64>) {
     let part = with_state(|s| {
         s.now_playing.as_ref().filter(|np| !shares::is_share_id(&np.item.rating_key)).and_then(|np| np.item.primary_part().map(|p| p.id))
     });
-    if let (Some(server), Some(part), Some(plex_id)) = (server(), part, plex_id) {
+    let owner = with_state(|s| s.now_playing.as_ref().map(|n| n.item.rating_key.clone())).unwrap_or_default();
+    if let (Some(server), Some(part), Some(plex_id)) = (backend_for(&owner), part, plex_id) {
         rt().spawn(async move {
             let r = if kind == StreamKind::Audio {
                 server.set_streams(part, Some(plex_id), None).await
@@ -1653,7 +1691,7 @@ fn search(query: String) {
         if with_state(|s| s.search_generation) != generation {
             return; // typed more since
         }
-        let Some(server) = server() else { return };
+        let backends = all_backends();
         let ui = ui();
         ui.set_screen("home".into());
         ui.set_selected_library(-2);
@@ -1662,7 +1700,16 @@ fn search(query: String) {
         ui.set_loading(true);
         with_state(|s| s.generation += 1);
         rt().spawn(async move {
-            let results = server.search(&query).await;
+            let mut found = Vec::new();
+            let mut errors = Vec::new();
+            for b in &backends {
+                match b.search(&query).await {
+                    Ok(items) => found.extend(items),
+                    Err(e) => errors.push(e),
+                }
+            }
+            let results: Result<Vec<Item>, String> =
+                if found.is_empty() && !errors.is_empty() { Err(errors.join("; ")) } else { Ok(found) };
             on_ui(move |ui| {
                 if with_state(|s| s.search_generation) != generation {
                     return;
@@ -1695,7 +1742,6 @@ fn refresh() {
 // ---------- Music ----------
 
 fn play_music(items: Vec<Item>, start: usize) {
-    let server = server();
     let Some(p) = player() else { return toast(&ui(), "The player didn't start (libmpv missing?).") };
     let items: Vec<Item> = items.into_iter().filter(|i| i.primary_part().is_some()).collect();
     if items.is_empty() {
@@ -1703,10 +1749,9 @@ fn play_music(items: Vec<Item>, start: usize) {
     }
     let start = start.min(items.len() - 1);
     for (n, item) in items.iter().enumerate() {
-        let url = match (shares::music_url(item), &server) {
-            (Some(u), _) => u,
-            (None, Some(server)) => server.stream_url(item.primary_part().expect("filtered")),
-            (None, None) => continue,
+        let url = match shares::music_url(item).or_else(|| backend_for(&item.rating_key)?.stream_url(item)) {
+            Some(u) => u,
+            None => continue,
         };
         if n == 0 {
             p.load(&url, None);
@@ -1899,11 +1944,15 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     let compact = ui.window().size().to_logical(ui.window().scale_factor()).width < 720.0;
 
     if zone == "side" {
-        let last = libraries + 1; // 0 search, 1 Home, 2.. libraries
+        let last = libraries + 2; // 0 search, 1 Home, 2.. libraries, then Add Source
         if enter {
             match row {
                 0 => ui.global::<Nav>().set_search_request(ui.global::<Nav>().get_search_request() + 1),
                 1 => select_library(-1),
+                r if r == last => {
+                    ui.set_add_source_status(SharedString::new());
+                    ui.set_add_source_open(true);
+                }
                 r => select_library(r - 2),
             }
             if row > 0 {
@@ -2222,6 +2271,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     UI.with(|u| *u.borrow_mut() = Some(ui.as_weak()));
     with_state(|s| s.session = Session::load());
     shares::sync_configs();
+    backend::load_jf_servers();
 
     let models = Models {
         libraries: Rc::new(VecModel::default()),
@@ -2294,6 +2344,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
             s.items.clear();
         });
         begin_signin();
+    });
+    ui.on_skip_plex(|| {
+        with_state(|s| {
+            s.session.skip_plex = true;
+            s.session.save();
+            s.signin_generation += 1; // stop waiting for the code
+        });
+        enter_home();
     });
     ui.on_back(|| {
         let ui = crate::ui();
