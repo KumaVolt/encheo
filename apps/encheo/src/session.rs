@@ -55,7 +55,6 @@ pub struct SavedServer {
 static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Use this folder for everything Encheo stores (Android: the app's private data folder).
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn set_data_dir(dir: PathBuf) {
     let _ = DATA_DIR.set(dir);
 }

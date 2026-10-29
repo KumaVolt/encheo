@@ -11,6 +11,8 @@ as it is, including 4K HDR and lossless audio.
 > shares, Jellyfin, Emby and cloud drives are planned. See the [feature map](docs/parity.md) and
 > the [architecture](docs/architecture.md).
 
+![Encheo's home screen: Continue Watching and recently added films](docs/screenshots/home.png)
+
 ## Features
 
 - **Library:** home screen with Continue Watching and recently added titles, libraries for
@@ -22,6 +24,21 @@ as it is, including 4K HDR and lossless audio.
   language detected from the text
 - **Music:** artists, albums and a play queue
 - **Every screen:** mouse, touch, keyboard and TV remote
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/movie.png" alt="A film's details: ratings, formats, cast and crew"></td>
+    <td><img src="docs/screenshots/show.png" alt="A TV show's details with seasons and episodes"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/library.png" alt="The Movies library"></td>
+    <td><img src="docs/screenshots/album.png" alt="An album with its tracks"></td>
+  </tr>
+</table>
+
+The screenshots show a made-up library on a pretend Plex server. GitHub Actions takes them on every
+build ([scripts/screenshots](scripts/screenshots)); to take them yourself, build Encheo and run
+`scripts/screenshots/run.sh` (needs Python with Pillow).
 
 ## Building
 

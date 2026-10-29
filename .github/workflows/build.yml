@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      update-screenshots:
+        description: Commit new README screenshots (docs/screenshots) to this branch
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,6 +18,8 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # only used to commit screenshots when asked to
     steps:
       - uses: actions/checkout@v4
       - name: System libraries
@@ -35,6 +42,29 @@ jobs:
         with:
           name: encheo-linux-x86_64
           path: encheo-linux-x86_64.tar.gz
+      # The README's screenshots: the app on a pretend Plex server with a made-up library, in a
+      # virtual display. Attached to every run; committed when the workflow is run by hand with
+      # update-screenshots.
+      - name: Screenshots
+        # Never holds up a build or a release.
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb python3-pil libgl1-mesa-dri
+          rm -rf docs/screenshots
+          xvfb-run -a -s "-screen 0 1920x1200x24" env SLINT_SCALE_FACTOR=1.5 \
+            scripts/screenshots/run.sh target/release/encheo docs/screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-screenshots
+          path: docs/screenshots
+      - name: Commit screenshots
+        if: github.event_name == 'workflow_dispatch' && inputs.update-screenshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots
+          git diff --cached --quiet || { git commit -m "README screenshots" && git push; }
 
   windows:
     runs-on: windows-2022

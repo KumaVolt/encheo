@@ -10,6 +10,8 @@ mod langs;
 mod progress;
 mod shares;
 mod player;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod screenshots;
 #[cfg(target_os = "ios")]
 mod ios_video;
 mod session;
@@ -2645,6 +2647,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
         })
         .with_winit_custom_application_handler(KeyTap::default())
         .select()?;
+    // Development: keep everything in another folder (the screenshot script's demo session).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(dir) = std::env::var_os("ENCHEO_DATA_DIR") {
+        session::set_data_dir(dir.into());
+    }
     let ui = AppWindow::new()?;
     ui.global::<Theme>().set_buttons_in_content(cfg!(target_os = "macos"));
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
@@ -2923,6 +2930,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 p.load(&url, None);
             }
         });
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(dir) = std::env::var_os("ENCHEO_SCREENSHOTS") {
+        screenshots::start(dir.into());
     }
     // iOS: give mpv its video layer once the window (and its view) exists.
     #[cfg(target_os = "ios")]
