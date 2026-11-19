@@ -1,7 +1,19 @@
 Preview of Encheo, an open-source media player for Windows, Linux, macOS, Android (phones and
 Android TV) and, experimentally, iPhone and iPad. Early software: expect rough edges.
 
-## New in 0.3.0
+## New in 0.4.0
+
+- **Featured title on Home:** a large banner with the artwork, summary and Play / More Info
+- **Trailers:** a Trailer button on film and show pages when your Plex or Jellyfin/Emby server has
+  one. Online-only Jellyfin trailers open in the browser or YouTube app
+- **Settings screen:** sources, sign out, refresh and About now live in one place, behind the gear
+  icon, so they are hard to press by accident. Edit or remove sources from there
+- **TV mode:** on Android TV the side menu shrinks to icons, text is larger, and the selected
+  poster grows with a white frame so it is easy to see from the sofa
+- **Remote Back button:** goes back a step (Settings, search, library, top of Home, menu) instead
+  of leaving the app
+
+## In 0.3.0
 
 - **iPhone and iPad (experimental):** the whole app, with video through mpv on Metal. Unsigned
   `.ipa` for sideloading with AltStore or SideStore. Only tested in the iOS simulator so far, where
