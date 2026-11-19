@@ -1,5 +1,6 @@
 //! Media servers behind one face: Plex, and Jellyfin/Emby. Items say which server they belong to
-//! through their id (Jellyfin/Emby ids are prefixed `jf<n>:`; Plex ids are bare).
+//! through their id (Jellyfin/Emby ids are prefixed `jf<n>:`, n being the server's number in
+//! `Session::media_server_ids`; Plex ids are bare).
 
 use super::*;
 use encheo_jellyfin as jf;
@@ -10,19 +11,23 @@ pub(crate) enum Backend {
     Jf(jf::Server),
 }
 
-/// Prefix of the n-th Jellyfin/Emby server's ids.
+/// Prefix of the ids of the Jellyfin/Emby server numbered `n`.
 pub(crate) fn jf_prefix(n: usize) -> String {
     format!("jf{n}:")
 }
 
-fn jf_index(id: &str) -> Option<usize> {
+fn jf_number(id: &str) -> Option<usize> {
     id.strip_prefix("jf")?.split_once(':')?.0.parse().ok()
 }
 
 /// The server an item (or library key) belongs to.
 pub(crate) fn backend_for(id: &str) -> Option<Backend> {
-    match jf_index(id) {
-        Some(n) => with_state(|s| s.jf_servers.get(n).cloned()).map(Backend::Jf),
+    match jf_number(id) {
+        Some(n) => with_state(|s| {
+            let i = s.session.media_server_ids.iter().position(|&m| m == n)?;
+            s.jf_servers.get(i).cloned()
+        })
+        .map(Backend::Jf),
         None => server().map(Backend::Plex),
     }
 }
@@ -47,11 +52,18 @@ pub(crate) fn load_jf_servers() {
     with_state(|s| {
         let client = jf_client(&s.session);
         s.jf_servers =
-            s.session.media_servers.iter().enumerate().map(|(i, l)| jf::Server::new(l.clone(), client.clone(), jf_prefix(i))).collect();
+            s.session.media_servers.iter().zip(&s.session.media_server_ids).map(|(l, &n)| jf::Server::new(l.clone(), client.clone(), jf_prefix(n))).collect();
     });
 }
 
 type R<T> = Result<T, String>;
+
+/// A title's trailer: something to play, or (Jellyfin/Emby online trailers) a web address.
+#[derive(Clone, Debug)]
+pub(crate) enum Trailer {
+    Play(Box<Item>),
+    Link(String),
+}
 
 impl Backend {
     /// Shown above its libraries in the sidebar.
@@ -59,14 +71,6 @@ impl Backend {
         match self {
             Backend::Plex(s) => s.name().to_string(),
             Backend::Jf(s) => s.name().to_string(),
-        }
-    }
-
-    pub fn kind_label(&self) -> &'static str {
-        match self {
-            Backend::Plex(_) => "Plex",
-            Backend::Jf(s) if s.login().flavor == jf::Flavor::Emby => "Emby",
-            Backend::Jf(_) => "Jellyfin",
         }
     }
 
@@ -130,6 +134,25 @@ impl Backend {
         match self {
             Backend::Plex(s) => s.search(q).await.map_err(|e| e.to_string()),
             Backend::Jf(s) => s.search(q).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    /// The first trailer, if the server has one.
+    pub async fn trailer(&self, id: &str) -> Option<Trailer> {
+        match self {
+            Backend::Plex(s) => s
+                .extras(id)
+                .await
+                .ok()?
+                .into_iter()
+                .find(|i| (i.extra_type == "1" || i.subtype.as_deref() == Some("trailer")) && i.primary_part().is_some())
+                .map(|i| Trailer::Play(Box::new(i))),
+            Backend::Jf(s) => {
+                if let Some(item) = s.local_trailers(id).await.ok().and_then(|l| l.into_iter().next()) {
+                    return Some(Trailer::Play(Box::new(item)));
+                }
+                s.remote_trailers(id).await.ok()?.into_iter().next().map(Trailer::Link)
+            }
         }
     }
 
@@ -249,8 +272,8 @@ impl Backend {
 mod tests {
     #[test]
     fn prefixes() {
-        assert_eq!(super::jf_index("jf2:abc"), Some(2));
-        assert_eq!(super::jf_index("12345"), None);
-        assert_eq!(super::jf_index("share-file:0:x"), None);
+        assert_eq!(super::jf_number("jf2:abc"), Some(2));
+        assert_eq!(super::jf_number("12345"), None);
+        assert_eq!(super::jf_number("share-file:0:x"), None);
     }
 }

@@ -1,7 +1,7 @@
 //! File sources in the app: folders, WebDAV and SMB shares shown as libraries you browse by folder.
 //!
 //! Item ids: `share-dir:<source>:<path>` for folders and `share-file:<source>:<path>` for files,
-//! where `<source>` is the index in `Session::sources`.
+//! where `<source>` is the source's number (`Session::source_ids`), not its place in the list.
 
 use super::*;
 use encheo_vfs::{Config, Kind, MediaKind, Source, names};
@@ -24,8 +24,20 @@ fn split_id(id: &str) -> Option<(bool, usize, String)> {
     Some((is_dir, i.parse().ok()?, path.to_string()))
 }
 
-fn file_id(source: usize, path: &str) -> String {
-    format!("{FILE}{source}:{path}")
+/// `split_id`, with the source's place in the list in place of its number. None once it's removed.
+fn locate(id: &str) -> Option<(bool, usize, String)> {
+    let (is_dir, number, path) = split_id(id)?;
+    let index = SOURCES.lock().ok()?.iter().position(|(n, _)| *n == number)?;
+    Some((is_dir, index, path))
+}
+
+/// The number of the source at `index`, which ids carry.
+fn number(index: usize) -> usize {
+    SOURCES.lock().ok().and_then(|v| v.get(index).map(|(n, _)| *n)).unwrap_or(index)
+}
+
+fn file_id(index: usize, path: &str) -> String {
+    format!("{FILE}{}:{path}", number(index))
 }
 
 /// Sidebar entries for the file sources, after the server's libraries.
@@ -48,7 +60,7 @@ fn connected(index: usize) -> Result<Arc<Source>, String> {
     if let Some(s) = player::STREAM_SOURCES.lock().ok().and_then(|v| v.get(index).cloned().flatten()) {
         return Ok(s);
     }
-    let config = SOURCES.lock().ok().and_then(|v| v.get(index).cloned()).ok_or("source removed")?;
+    let config = SOURCES.lock().ok().and_then(|v| v.get(index).map(|(_, c)| c.clone())).ok_or("source removed")?;
     let source = Arc::new(Source::connect(&config).map_err(|e| e.to_string())?);
     if let Ok(mut v) = player::STREAM_SOURCES.lock() {
         if v.len() <= index {
@@ -59,11 +71,11 @@ fn connected(index: usize) -> Result<Arc<Source>, String> {
     Ok(source)
 }
 
-/// A copy of the configs readable from worker threads.
-static SOURCES: std::sync::Mutex<Vec<Config>> = std::sync::Mutex::new(Vec::new());
+/// A copy of the sources (number, config) readable from worker threads.
+static SOURCES: std::sync::Mutex<Vec<(usize, Config)>> = std::sync::Mutex::new(Vec::new());
 
 pub(crate) fn sync_configs() {
-    let configs = with_state(|s| s.session.sources.clone());
+    let configs: Vec<(usize, Config)> = with_state(|s| s.session.source_ids.iter().copied().zip(s.session.sources.iter().cloned()).collect());
     if let Ok(mut v) = SOURCES.lock() {
         *v = configs;
     }
@@ -81,7 +93,6 @@ pub(crate) fn browse(index: usize, path: String) {
     let title = if path.is_empty() { name.clone() } else { format!("{name} › {}", path.replace('/', " › ")) };
     ui.set_grid_title(title.into());
     ui.set_grid_square(false);
-    ui.set_grid_can_remove(path.is_empty());
     ui.set_loading(true);
     let generation = with_state(|s| {
         s.generation += 1;
@@ -124,7 +135,7 @@ pub(crate) fn browse(index: usize, path: String) {
 
 fn folder_poster(index: usize, path: &str, title: &str, icon: &str) -> Poster {
     Poster {
-        id: format!("{DIR}{index}:{path}").into(),
+        id: format!("{DIR}{}:{path}", number(index)).into(),
         title: title.into(),
         subtitle: if icon == "icon:back" { "Up one folder".into() } else { "Folder".into() },
         art_url: icon.into(),
@@ -294,7 +305,7 @@ fn hash_id(id: &str) -> u64 {
 
 /// Handle a click on a share item. Returns false if `id` isn't one.
 pub(crate) fn open(id: &str) -> bool {
-    let Some((is_dir, index, path)) = split_id(id) else { return false };
+    let Some((is_dir, index, path)) = locate(id) else { return is_share_id(id) };
     if is_dir {
         browse(index, path);
     } else {
@@ -320,7 +331,7 @@ fn play_file(index: usize, path: &str) {
     let Some(item) = with_state(|s| s.items.get(&id).cloned()) else { return };
     let siblings: Vec<Item> = with_state(|s| {
         let folder = path.rsplit_once('/').map(|(f, _)| f).unwrap_or("");
-        let prefix = format!("{FILE}{index}:");
+        let prefix = format!("{FILE}{}:", number(index));
         let mut v: Vec<Item> = s
             .items
             .values()
@@ -402,15 +413,12 @@ fn play_file(index: usize, path: &str) {
 /// In-progress files for the home screen's Continue Watching, most recent first. Only for
 /// sources that still exist.
 pub(crate) fn continue_watching() -> Vec<(Poster, Item)> {
-    let (store, sources) = with_state(|s| (s.progress.get_or_insert_with(progress::Store::load).clone(), s.session.sources.len()));
+    let store = with_state(|s| s.progress.get_or_insert_with(progress::Store::load).clone());
     store
         .in_progress()
         .into_iter()
         .filter_map(|(id, p)| {
-            let (false, index, path) = split_id(&id)? else { return None };
-            if index >= sources {
-                return None;
-            }
+            let (false, index, path) = locate(&id)? else { return None };
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             let item = file_item(index, &path, &name, None);
             let poster = Poster {
@@ -431,7 +439,7 @@ pub(crate) fn continue_watching() -> Vec<(Poster, Item)> {
 
 /// Play a neighbouring file (previous/next/list in the player).
 pub(crate) fn play_item(item: &Item) -> bool {
-    match split_id(&item.rating_key) {
+    match locate(&item.rating_key) {
         Some((false, index, path)) => {
             play_file(index, &path);
             true
@@ -448,33 +456,53 @@ pub(crate) fn record_progress(item: &Item, position: f64) {
 
 /// What mpv opens for a music file in a queue (through `encheo://`, so credentials need no headers).
 pub(crate) fn music_url(item: &Item) -> Option<String> {
-    let (_, index, path) = split_id(&item.rating_key)?;
+    let (_, index, path) = locate(&item.rating_key)?;
     Some(player::stream_url(index, &path))
 }
 
 /// A reader for the playing file, for subtitle language detection.
 pub(crate) fn open_reader(item: &Item) -> Option<Box<dyn encheo_vfs::ReadSeek>> {
-    let (_, index, path) = split_id(&item.rating_key)?;
+    let (_, index, path) = locate(&item.rating_key)?;
     connected(index).ok()?.open(&path).ok()
 }
 
-/// The add-source form was submitted: connect, and keep it if that works.
+/// The form's numbers for the kinds of file source (3 is Jellyfin/Emby, 8 Plex).
+const FORM_KINDS: [(i32, Kind); 7] =
+    [(0, Kind::Local), (1, Kind::Smb), (2, Kind::WebDav), (4, Kind::Sftp), (5, Kind::Ftp), (6, Kind::Nfs), (7, Kind::Dlna)];
+
+/// The add-source form was submitted: connect, and keep it (or the edited one) if that works.
 pub(crate) fn add_source(kind: i32, name: String, location: String, username: String, password: String) {
-    if kind == 3 {
-        return add_media_server(location, username, password);
+    let editing = with_state(|s| s.editing);
+    if kind == 8 {
+        let ui = ui();
+        ui.set_add_source_open(false);
+        ui.set_sources_open(false);
+        return begin_signin();
     }
-    let kind = match kind {
-        0 => Kind::Local,
-        1 => Kind::Smb,
-        4 => Kind::Sftp,
-        5 => Kind::Ftp,
-        6 => Kind::Nfs,
-        7 => Kind::Dlna,
-        _ => Kind::WebDav,
-    };
+    if kind == 3 {
+        let replace = match editing {
+            Some(Editing::Server(i)) => Some(i),
+            _ => None,
+        };
+        return add_media_server(location, username, password, replace);
+    }
+    let kind = FORM_KINDS.iter().find(|(n, _)| *n == kind).map_or(Kind::WebDav, |(_, k)| *k);
     let location = location.trim().to_string();
     let name = if name.trim().is_empty() { default_name(kind, &location) } else { name.trim().to_string() };
-    let config = Config { kind, name, location, username: username.trim().to_string(), password, host_key: None };
+    let mut config = Config { kind, name, location, username: username.trim().to_string(), password, host_key: None };
+    let editing = match editing {
+        Some(Editing::Files(i)) => with_state(|s| s.session.sources.get(i).cloned()).map(|old| (i, old)),
+        _ => None,
+    };
+    if let Some((_, old)) = &editing {
+        // An empty password field means "unchanged"; a server key stays pinned to its address.
+        if config.password.is_empty() {
+            config.password = old.password.clone();
+        }
+        if config.location == old.location {
+            config.host_key = old.host_key.clone();
+        }
+    }
     let ui = ui();
     ui.set_add_source_busy(true);
     ui.set_add_source_status("Connecting…".into());
@@ -488,11 +516,18 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
                     config.host_key = source.host_key(); // SFTP: pin the server's key
                     ui.set_add_source_open(false);
                     ui.set_add_source_status(SharedString::new());
-                    let index = with_state(|s| {
-                        s.session.sources.push(config);
-                        s.session.save();
-                        s.session.sources.len() - 1
-                    });
+                    if let Some((index, _)) = editing {
+                        with_state(|s| {
+                            s.session.sources[index] = config;
+                            s.session.save();
+                            s.editing = None;
+                        });
+                        sync_configs();
+                        refresh_sidebar();
+                        return fill_sources();
+                    }
+                    ui.set_sources_open(false);
+                    let index = with_state(|s| s.session.add_source(config));
                     sync_configs();
                     refresh_sidebar();
                     let lib = with_state(|s| s.library_keys.iter().position(|k| *k == format!("share:{index}")));
@@ -512,8 +547,8 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
     });
 }
 
-/// Sign in to a Jellyfin or Emby server and add its libraries.
-fn add_media_server(address: String, username: String, password: String) {
+/// Sign in to a Jellyfin or Emby server and add its libraries (or replace the login at `replace`).
+fn add_media_server(address: String, username: String, password: String, replace: Option<usize>) {
     let ui = ui();
     ui.set_add_source_busy(true);
     ui.set_add_source_status("Signing in…".into());
@@ -526,15 +561,19 @@ fn add_media_server(address: String, username: String, password: String) {
                 Ok(login) => {
                     ui.set_add_source_open(false);
                     ui.set_add_source_status(SharedString::new());
+                    let edited = replace.is_some();
                     with_state(|s| {
-                        // Signing in again to the same server replaces the old login.
-                        s.session.media_servers.retain(|l| !(l.base_url == login.base_url && l.user_id == login.user_id));
-                        s.session.media_servers.push(login);
-                        s.session.save();
+                        s.session.add_media_server(login, replace);
                         s.items.clear();
+                        s.editing = None;
                     });
                     backend::load_jf_servers();
                     enter_home();
+                    if edited {
+                        fill_sources();
+                    } else {
+                        ui.set_sources_open(false);
+                    }
                 }
                 Err(e) => ui.set_add_source_status(format!("{e}").into()),
             }
@@ -548,33 +587,138 @@ fn default_name(kind: Kind, location: &str) -> String {
     if last.is_empty() || last.contains(':') { kind.label().to_string() } else { last.to_string() }
 }
 
-/// Remove the source being shown: a file source, or the Jellyfin/Emby server of the library.
-pub(crate) fn remove_current() {
+// ---------- Sources window ----------
+
+/// What the add/edit form is changing: a file source or a Jellyfin/Emby login, by position.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Editing {
+    Files(usize),
+    Server(usize),
+}
+
+/// Open the Sources window.
+pub(crate) fn open_sources() {
+    fill_sources();
     let ui = ui();
-    let lib = ui.get_selected_library();
-    let key = with_state(|s| s.library_keys.get(lib.max(0) as usize).cloned()).unwrap_or_default();
-    if let Some(n) = key.strip_prefix("jf").and_then(|r| r.split_once(':')).and_then(|(n, _)| n.parse::<usize>().ok()) {
-        with_state(|s| {
-            if n < s.session.media_servers.len() {
-                s.session.media_servers.remove(n);
-                s.session.save();
-            }
-            s.items.clear();
+    ui.set_sources_confirm(-1);
+    ui.set_sources_open(true);
+    crate::focus_settings();
+}
+
+/// The Sources window's list: Plex, then Jellyfin/Emby servers, then file sources.
+pub(crate) fn fill_sources() {
+    let rows = with_state(|s| {
+        let plex = match (&s.session.token, &s.session.server) {
+            (Some(_), Some(server)) => SourceRow {
+                kind: "plex".into(),
+                title: server.name.clone().into(),
+                label: "Plex".into(),
+                detail: server.base_url.clone().into(),
+                signed_in: true,
+                ..Default::default()
+            },
+            (Some(_), None) => SourceRow { kind: "plex".into(), title: "Plex".into(), label: "Plex".into(), detail: "Signed in, no server yet".into(), signed_in: true, ..Default::default() },
+            _ => SourceRow { kind: "plex".into(), title: "Plex".into(), label: "Plex".into(), detail: "Not signed in".into(), ..Default::default() },
+        };
+        let servers = s.session.media_servers.iter().enumerate().map(|(i, l)| SourceRow {
+            kind: "server".into(),
+            index: i as i32,
+            title: l.server_name.clone().into(),
+            label: if l.flavor == encheo_jellyfin::Flavor::Emby { "Emby" } else { "Jellyfin" }.into(),
+            detail: format!("{} · {}", l.user_name, l.base_url).into(),
+            signed_in: true,
         });
-        backend::load_jf_servers();
-        return select_library(-1);
-    }
-    let Some((index, _)) = with_state(|s| s.share_view.clone()) else { return };
-    with_state(|s| {
-        if index < s.session.sources.len() {
-            s.session.sources.remove(index);
-            s.session.save();
-        }
-        s.share_view = None;
+        let files = s.session.sources.iter().enumerate().map(|(i, c)| SourceRow {
+            kind: "files".into(),
+            index: i as i32,
+            title: c.name.clone().into(),
+            label: c.kind.label().into(),
+            detail: c.location.clone().into(),
+            signed_in: true,
+        });
+        std::iter::once(plex).chain(servers).chain(files).collect::<Vec<_>>()
     });
-    sync_configs();
-    refresh_sidebar();
-    select_library(-1);
+    ui().set_sources(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Open the form for a new source. Plex comes first until the user has signed in to it.
+pub(crate) fn new_source() {
+    let plex = with_state(|s| {
+        s.editing = None;
+        s.session.token.is_some()
+    });
+    let ui = ui();
+    ui.set_form_editing(false);
+    ui.set_form_kind(if plex { 1 } else { 8 });
+    for set in [AppWindow::set_form_name, AppWindow::set_form_location, AppWindow::set_form_user, AppWindow::set_form_password] {
+        set(&ui, SharedString::new());
+    }
+    ui.set_add_source_status(SharedString::new());
+    ui.set_add_source_open(true);
+    scan_network();
+}
+
+/// Open the form filled in with a source's settings. The password stays blank: blank keeps it.
+pub(crate) fn edit_source(kind: &str, index: usize) {
+    let ui = ui();
+    let found = with_state(|s| match kind {
+        "files" => s.session.sources.get(index).map(|c| {
+            let n = FORM_KINDS.iter().find(|(_, k)| *k == c.kind).map_or(2, |(n, _)| *n);
+            (Editing::Files(index), n, c.name.clone(), c.location.clone(), c.username.clone())
+        }),
+        "server" => s.session.media_servers.get(index).map(|l| (Editing::Server(index), 3, l.server_name.clone(), l.base_url.clone(), l.user_name.clone())),
+        _ => None,
+    });
+    let Some((editing, form_kind, name, location, user)) = found else { return };
+    with_state(|s| s.editing = Some(editing));
+    ui.set_form_editing(true);
+    ui.set_form_kind(form_kind);
+    ui.set_form_name(name.into());
+    ui.set_form_location(location.into());
+    ui.set_form_user(user.into());
+    ui.set_form_password(SharedString::new());
+    ui.set_add_source_status(SharedString::new());
+    ui.set_add_source_open(true);
+}
+
+/// Remove a source (the user has confirmed). Plex: sign out.
+pub(crate) fn remove_source(kind: &str, index: usize) {
+    match kind {
+        "plex" => {
+            let others = with_state(|s| {
+                s.session.sign_out();
+                s.server = None;
+                s.items.clear();
+                let others = !s.session.media_servers.is_empty() || !s.session.sources.is_empty();
+                s.session.skip_plex = others;
+                s.session.save();
+                others
+            });
+            if !others {
+                ui().set_sources_open(false);
+                return begin_signin();
+            }
+            enter_home();
+        }
+        "server" => {
+            with_state(|s| {
+                s.session.remove_media_server(index);
+                s.items.clear();
+            });
+            backend::load_jf_servers();
+            enter_home();
+        }
+        _ => {
+            with_state(|s| {
+                s.session.remove_source(index);
+                s.share_view = None;
+            });
+            sync_configs();
+            refresh_sidebar();
+            select_library(-1);
+        }
+    }
+    fill_sources();
 }
 
 /// Rebuild the sidebar: server libraries, then file sources.
@@ -664,7 +808,7 @@ mod walk_tests {
             password: String::new(),
             host_key: None,
         };
-        *super::SOURCES.lock().unwrap() = vec![config];
+        *super::SOURCES.lock().unwrap() = vec![(0, config)];
         let found = super::search_files("big test");
         let names: Vec<_> = found.iter().map(|(_, n)| n.as_str()).collect();
         assert_eq!(names, ["Big.Test.2024.1080p.WEB.mkv"], "{names:?}");

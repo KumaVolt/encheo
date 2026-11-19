@@ -18,7 +18,7 @@ mod session;
 
 use encheo_plex::{ClientInfo, Item, ItemKind, MarkerKind, PlayState, Plex, Server, Stream, StreamKind};
 use player::{Player, clock};
-use backend::{Backend, all_backends, backend_for};
+use backend::{all_backends, backend_for};
 use session::{SavedServer, Session};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
@@ -81,6 +81,14 @@ struct State {
     show_store: Option<langs::ShowStore>,
     detail: Option<Item>,
     detail_backdrop_url: String,
+    /// The details page's trailer, once its server has said whether there is one.
+    trailer: Option<backend::Trailer>,
+    /// The title in Home's billboard.
+    billboard: Option<Item>,
+    /// Where the remote's focus was before Settings opened.
+    dialog_return: Option<(SharedString, i32, i32)>,
+    /// What the add/edit source form is editing; None when it adds.
+    editing: Option<shares::Editing>,
     season_items: Vec<Item>,
     next_up: Option<Item>,
     now_playing: Option<NowPlaying>,
@@ -303,14 +311,7 @@ fn enter_home() {
     load_profile();
     with_state(|s| s.share_view = None);
     let ui = ui();
-    ui.set_grid_can_remove(false);
     let backends = all_backends();
-    ui.set_server_name(backends.iter().map(Backend::label).collect::<Vec<_>>().join(", ").into());
-    ui.set_server_kind(match backends.as_slice() {
-        [] => SharedString::new(),
-        [b] => b.kind_label().into(),
-        _ => "Media servers".into(),
-    });
     ui.set_screen("home".into());
     ui.set_selected_library(-1);
     ui.set_loading(true);
@@ -407,12 +408,85 @@ fn enter_home() {
                 row_models.push(model);
             }
             let grouped: Vec<Item> = libs.iter().flat_map(|(_, _, items)| group_recent(items).into_iter().map(|(i, _)| i)).collect();
+            set_billboard(ui, pick_billboard(&libs, &grouped, &on_deck));
             remember(on_deck.into_iter().chain(libs.into_iter().flat_map(|(_, _, items)| items)).chain(grouped));
             with_models(|m| {
                 m.continue_watching.set_vec(cw);
                 *m.row_models.borrow_mut() = row_models;
                 m.home_rows.set_vec(rows);
             });
+        });
+    });
+}
+
+/// Home's big title: the newest film not yet watched, else the newest show, else what's in
+/// progress. Only titles with a backdrop; a billboard without a picture looks broken.
+fn pick_billboard(libs: &[(String, encheo_plex::Library, Vec<Item>)], grouped: &[Item], on_deck: &[Item]) -> Option<Item> {
+    let has_art = |i: &&Item| i.art.as_deref().is_some_and(|a| !a.is_empty());
+    let films = libs.iter().filter(|(_, l, _)| l.kind == "movie").flat_map(|(_, _, items)| items);
+    let film = films.clone().filter(has_art).find(|i| !i.is_watched()).or_else(|| films.clone().find(has_art));
+    film.or_else(|| grouped.iter().filter(|i| i.kind == ItemKind::Show).find(has_art))
+        .or_else(|| on_deck.iter().find(|i| i.kind == ItemKind::Movie && has_art(i)))
+        .cloned()
+}
+
+fn set_billboard(ui: &AppWindow, item: Option<Item>) {
+    let Some(item) = item else {
+        with_state(|s| s.billboard = None);
+        return ui.set_billboard(Billboard::default());
+    };
+    let mut meta = Vec::new();
+    if let Some(y) = item.year {
+        meta.push(y.to_string());
+    }
+    let genres: Vec<&str> = item.genres.iter().take(2).map(|g| g.tag.as_str()).collect();
+    if !genres.is_empty() {
+        meta.push(genres.join(", "));
+    }
+    match item.kind {
+        ItemKind::Movie => meta.extend(item.duration.map(runtime)),
+        ItemKind::Show => meta.extend(item.child_count.map(|n| format!("{n} season{}", if n == 1 { "" } else { "s" }))),
+        _ => {}
+    }
+    let art_url = backdrop_url(&item);
+    let logo_url = art_url_for_logo(&item);
+    let b = Billboard {
+        id: item.rating_key.clone().into(),
+        title: item.title.clone().into(),
+        meta: meta.join("  ·  ").into(),
+        summary: short_summary(item.summary.as_deref().unwrap_or_default(), 200).into(),
+        image: want_image(&art_url),
+        art_url: art_url.into(),
+        logo: want_image(&logo_url),
+        logo_url: logo_url.into(),
+        play_label: if item.view_offset.is_some_and(|o| o > 0) { "Resume" } else { "Play" }.into(),
+    };
+    with_state(|s| s.billboard = Some(item));
+    ui.set_billboard(b);
+}
+
+fn art_url_for_logo(item: &Item) -> String {
+    item.logo.as_deref().filter(|l| !l.is_empty()).map(|l| art_url(Some(l), 800, 300)).unwrap_or_default()
+}
+
+/// The billboard's Play: a film plays (resuming); a show plays its next episode.
+fn play_billboard() {
+    let Some(item) = with_state(|s| s.billboard.clone()) else { return };
+    if item.kind != ItemKind::Show {
+        return play(item);
+    }
+    let Some(server) = backend_for(&item.rating_key) else { return };
+    rt().spawn(async move {
+        let eps = server.all_episodes(&item.rating_key).await.unwrap_or_default();
+        let next = eps
+            .iter()
+            .find(|e| e.progress().is_some())
+            .or_else(|| eps.iter().find(|e| !e.is_watched()))
+            .or(eps.first())
+            .cloned();
+        on_ui(move |_| match next {
+            Some(e) => play(e),
+            None => open_item(item.rating_key),
         });
     });
 }
@@ -492,8 +566,6 @@ fn select_library(index: i32) {
     });
     let Some(key) = key else { return };
     let Some(server) = backend_for(&key) else { return };
-    // Jellyfin/Emby servers can be removed from any of their libraries.
-    ui.set_grid_can_remove(matches!(server, Backend::Jf(_)));
     let kind_str = kind.clone().unwrap_or_default();
     ui.set_grid_square(kind.as_deref() == Some("artist"));
     let title = with_models(|m| m.libraries.row_data(index as usize).map(|l| l.title)).unwrap_or_default();
@@ -686,6 +758,16 @@ fn apply_image(ui: &AppWindow, url: &str, img: &Image) {
     if with_state(|s| s.detail_backdrop_url == url) {
         ui.set_detail_backdrop(img.clone());
     }
+    let mut b = ui.get_billboard();
+    if b.art_url == url || b.logo_url == url {
+        if b.art_url == url {
+            b.image = img.clone();
+        }
+        if b.logo_url == url {
+            b.logo = img.clone();
+        }
+        ui.set_billboard(b);
+    }
 }
 
 fn backdrop_url(item: &Item) -> String {
@@ -789,8 +871,15 @@ fn show_detail(item: Item) {
         m.people.set_vec(Vec::<Person>::new());
         m.related.set_vec(Vec::<Poster>::new());
     });
-    with_state(|s| s.album_tracks.clear());
+    with_state(|s| {
+        s.album_tracks.clear();
+        s.trailer = None;
+    });
+    ui.set_detail_can_trailer(false);
     ui.set_screen("detail".into());
+    if matches!(item.kind, ItemKind::Movie | ItemKind::Show) {
+        find_trailer(&item.rating_key);
+    }
 
     let Some(server) = backend_for(&item.rating_key) else { return };
     let generation = with_state(|s| s.generation);
@@ -862,6 +951,66 @@ fn show_detail(item: Item) {
             }
         });
     });
+}
+
+/// Ask the item's server for a trailer; the Trailer button shows when there is one.
+fn find_trailer(id: &str) {
+    let Some(server) = backend_for(id) else { return };
+    let generation = with_state(|s| s.generation);
+    let id = id.to_string();
+    rt().spawn(async move {
+        let trailer = server.trailer(&id).await;
+        on_ui(move |ui| {
+            if with_state(|s| s.generation) != generation {
+                return;
+            }
+            ui.set_detail_can_trailer(trailer.is_some());
+            with_state(|s| s.trailer = trailer);
+        });
+    });
+}
+
+fn play_trailer() {
+    match with_state(|s| s.trailer.clone()) {
+        Some(backend::Trailer::Play(item)) => play_fresh(*item),
+        Some(backend::Trailer::Link(url)) => open_url(&url),
+        None => {}
+    }
+}
+
+/// Open a web address in the system's browser (Android: whatever app handles it, e.g. YouTube).
+pub(crate) fn open_url(url: &str) {
+    #[cfg(target_os = "android")]
+    if let Some(app) = ANDROID_APP.get() {
+        if let Err(e) = android_view(app, url) {
+            eprintln!("open {url}: {e}");
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = open::that(url);
+}
+
+/// Android: start an ACTION_VIEW intent for the URL.
+#[cfg(target_os = "android")]
+fn android_view(app: &slint::android::AndroidApp, url: &str) -> jni::errors::Result<()> {
+    use jni::objects::{JObject, JValue};
+    // SAFETY: both pointers come from the running activity and stay valid while it runs.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    let mut env = vm.attach_current_thread()?;
+    let jurl = env.new_string(url)?;
+    let uri = env
+        .call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&jurl)])?
+        .l()?;
+    let action = env.new_string("android.intent.action.VIEW")?;
+    let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[JValue::Object(&action), JValue::Object(&uri)])?;
+    env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000)])?; // FLAG_ACTIVITY_NEW_TASK
+    let started = env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)]);
+    if started.is_err() {
+        // No app for it (no browser on some TVs): don't leave a Java exception pending.
+        let _ = env.exception_clear();
+    }
+    started.map(|_| ())
 }
 
 fn fill_detail_text(ui: &AppWindow, item: &Item) {
@@ -2241,6 +2390,7 @@ enum DetailRow {
 /// tracks are one row each per item; their first row index is what the UI needs.
 fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     let actions = usize::from(!ui.get_play_label().is_empty())
+        + usize::from(ui.get_detail_can_trailer())
         + usize::from(ui.get_detail_can_restart())
         + usize::from(ui.get_detail_can_mark_watched())
         + usize::from(ui.get_detail_can_favourite());
@@ -2283,6 +2433,22 @@ fn nav_key(key: &str) -> bool {
     }
     let ui = ui();
     let nav = ui.global::<Nav>();
+    // Windows over the page: About closes with OK; the add/edit form has text fields, which take
+    // the keys themselves; Settings has its own focus.
+    if ui.get_about_open() {
+        if enter {
+            ui.set_about_open(false);
+        }
+        return true;
+    }
+    if ui.get_add_source_open() {
+        return false;
+    }
+    if ui.get_sources_open() {
+        nav.set_active(true);
+        let (zone, row, col) = (nav.get_zone(), nav.get_row(), nav.get_col());
+        return settings_nav(&ui, &zone, row, col, key, enter);
+    }
     if !nav.get_active() {
         // First key press only reveals the focus, on the content (never straight into search).
         nav.set_active(true);
@@ -2314,19 +2480,15 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     let compact = ui.window().size().to_logical(ui.window().scale_factor()).width < 720.0;
 
     if zone == "side" {
-        let last = libraries + 2; // 0 search, 1 Home, 2.. libraries, then Add Source
+        let last = libraries + 2; // 0 search, 1 Home, 2.. libraries, then Sources
         if enter {
             match row {
                 0 => ui.global::<Nav>().set_search_request(ui.global::<Nav>().get_search_request() + 1),
                 1 => select_library(-1),
-                r if r == last => {
-                    ui.set_add_source_status(SharedString::new());
-                    ui.set_add_source_open(true);
-                    scan_network();
-                }
+                r if r == last => shares::open_sources(),
                 r => select_library(r - 2),
             }
-            if row > 0 {
+            if row > 0 && row != last {
                 set_focus(ui, "side", row, 0);
             }
         } else if is(Key::UpArrow) {
@@ -2346,9 +2508,13 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     };
 
     if selected == -1 {
-        // Shelves: continue watching (if any), then one row per library.
+        // The billboard (Play, More Info), continue watching (if any), then one row per library.
+        let billboard = ui.get_billboard().id;
         let lens: Vec<(i32, Vec<SharedString>)> = with_models(|m| {
             let mut v = Vec::new();
+            if !billboard.is_empty() {
+                v.push((2, vec![]));
+            }
             if m.continue_watching.row_count() > 0 {
                 v.push((m.continue_watching.row_count() as i32, m.continue_watching.iter().map(|p| p.id).collect()));
             }
@@ -2362,7 +2528,9 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         }
         let row = row.clamp(0, lens.len() as i32 - 1);
         let col = col.clamp(0, (lens[row as usize].0 - 1).max(0));
-        if enter {
+        if enter && row == 0 && !billboard.is_empty() {
+            if col == 0 { play_billboard() } else { open_item(billboard.to_string()) }
+        } else if enter {
             if let Some(id) = lens[row as usize].1.get(col as usize) {
                 open_item(id.to_string());
             }
@@ -2406,6 +2574,71 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     true
 }
 
+/// Remote focus in Settings: one row per source (Edit/Remove, or Sign In/Sign Out for Plex, or
+/// Cancel/Remove while it asks), then Refresh, About, Add Source.
+fn settings_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bool) -> bool {
+    use slint::platform::Key;
+    let is = |k: Key| SharedString::from(k).as_str() == key;
+    if zone != "dialog" {
+        with_state(|s| s.dialog_return = Some((zone.into(), row, col)));
+        set_focus(ui, "dialog", 0, 0);
+        return true;
+    }
+    let sources: Vec<SourceRow> = ui.get_sources().iter().collect();
+    let confirm = ui.get_sources_confirm();
+    let width = |r: i32| -> i32 {
+        match sources.get(r as usize) {
+            Some(_) if r == confirm => 2,
+            Some(s) if s.kind == "plex" => 1,
+            Some(_) => 2,
+            None => 3,
+        }
+    };
+    let last = sources.len() as i32;
+    let row = row.clamp(0, last);
+    let col = col.clamp(0, width(row) - 1);
+    if enter {
+        match sources.get(row as usize) {
+            Some(src) if row == confirm => {
+                ui.set_sources_confirm(-1);
+                if col == 1 {
+                    shares::remove_source(&src.kind, src.index as usize);
+                    set_focus(ui, "dialog", 0, 0);
+                }
+            }
+            Some(src) if src.kind == "plex" && !src.signed_in => {
+                ui.set_sources_open(false);
+                begin_signin();
+            }
+            Some(src) if src.kind != "plex" && col == 0 => shares::edit_source(&src.kind, src.index as usize),
+            // Remove / Sign Out ask first; the focus starts on Cancel.
+            Some(_) => {
+                ui.set_sources_confirm(row);
+                set_focus(ui, "dialog", row, 0);
+            }
+            None => match col {
+                0 => {
+                    ui.set_sources_open(false);
+                    ui.invoke_refresh();
+                }
+                1 => ui.set_about_open(true),
+                _ => shares::new_source(),
+            },
+        }
+    } else if is(Key::UpArrow) || is(Key::DownArrow) {
+        let r = (row + if is(Key::UpArrow) { -1 } else { 1 }).clamp(0, last);
+        if r != row && confirm >= 0 {
+            ui.set_sources_confirm(-1);
+        }
+        set_focus(ui, "dialog", r, col.min(width(r) - 1));
+    } else if is(Key::LeftArrow) {
+        set_focus(ui, "dialog", row, (col - 1).max(0));
+    } else if is(Key::RightArrow) {
+        set_focus(ui, "dialog", row, (col + 1).min(width(row) - 1));
+    }
+    true
+}
+
 fn detail_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
     use slint::platform::Key;
     let is = |k: Key| SharedString::from(k).as_str() == key;
@@ -2418,8 +2651,16 @@ fn detail_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> boo
     }
     let len = rows[row as usize].1 as i32;
     let col = col.clamp(0, (len - 1).max(0));
+    // Wide layouts put Play above the other actions (Trailer, watched, …): Down and Up move
+    // between them before leaving the row.
+    let wide = ui.window().size().to_logical(ui.window().scale_factor()).width >= 720.0;
+    let play_on_top = wide && rows[row as usize].0 == DetailRow::Actions && !ui.get_play_label().is_empty() && len > 1;
     if enter {
         detail_activate(ui, rows[row as usize].0, row, col, &rows);
+    } else if play_on_top && is(Key::DownArrow) && col == 0 {
+        set_focus(ui, "detail", row, 1);
+    } else if play_on_top && is(Key::UpArrow) && col > 0 {
+        set_focus(ui, "detail", row, 0);
     } else if is(Key::UpArrow) || is(Key::DownArrow) {
         let step = if is(Key::UpArrow) { -1 } else { 1 };
         let mut r = row + step;
@@ -2444,6 +2685,9 @@ fn detail_activate(ui: &AppWindow, kind: DetailRow, row: i32, col: i32, rows: &[
             let mut actions: Vec<fn()> = Vec::new();
             if !ui.get_play_label().is_empty() {
                 actions.push(play_detail);
+            }
+            if ui.get_detail_can_trailer() {
+                actions.push(play_trailer);
             }
             if ui.get_detail_can_restart() {
                 actions.push(play_from_start);
@@ -2526,9 +2770,66 @@ impl slint::winit_030::CustomApplicationHandler for KeyTap {
     }
 }
 
+/// Settings opened: with the remote in use, the focus moves straight into it.
+pub(crate) fn focus_settings() {
+    let ui = ui();
+    let nav = ui.global::<Nav>();
+    if nav.get_active() && nav.get_zone() != "dialog" {
+        with_state(|s| s.dialog_return = Some((nav.get_zone(), nav.get_row(), nav.get_col())));
+        set_focus(&ui, "dialog", 0, 0);
+    }
+}
+
+/// Settings closed: the focus goes back to where it was.
+fn settings_closed() {
+    let ui = ui();
+    if ui.global::<Nav>().get_zone() == "dialog" {
+        let (zone, row, col) = with_state(|s| s.dialog_return.take()).unwrap_or(("content".into(), 0, 0));
+        set_focus(&ui, &zone, row, col);
+    }
+}
+
+/// Back on Home: windows first (About, the form, Settings with a pending "Remove?" first), then
+/// search results and library pages go back to Home. False when there's nothing to go back to.
+fn go_back() -> bool {
+    let ui = ui();
+    if ui.get_about_open() {
+        ui.set_about_open(false);
+    } else if ui.get_add_source_open() {
+        ui.set_add_source_open(false);
+    } else if ui.get_sources_open() {
+        if ui.get_sources_confirm() >= 0 {
+            ui.set_sources_confirm(-1);
+        } else {
+            ui.set_sources_open(false);
+        }
+    } else if ui.get_screen() == "home" && ui.get_selected_library() == -2 {
+        ui.set_search_text(SharedString::new());
+        enter_home();
+    } else if ui.get_screen() == "home" && ui.get_selected_library() >= 0 {
+        select_library(-1);
+    } else if ui.get_screen() == "home" && ui.global::<Nav>().get_active() {
+        // Like TV apps: Back goes to the top of Home, then to the menu, and only then leaves.
+        let nav = ui.global::<Nav>();
+        match (nav.get_zone().as_str(), nav.get_row(), nav.get_col()) {
+            ("content", 0, 0) if ui.window().size().to_logical(ui.window().scale_factor()).width >= 720.0 => {
+                set_focus(&ui, "side", 1, 0)
+            }
+            ("content", _, _) if (nav.get_row(), nav.get_col()) != (0, 0) => set_focus(&ui, "content", 0, 0),
+            _ => return false,
+        }
+    } else {
+        return false;
+    }
+    true
+}
+
 #[cfg(not(target_os = "android"))]
-/// Escape backs out one step: panel → fullscreen → player → details → search.
+/// Escape backs out one step: windows → panel → fullscreen → player → details → search.
 fn escape() {
+    if go_back() {
+        return;
+    }
     let ui = ui();
     let ps = ps(&ui);
     match ui.get_screen().as_str() {
@@ -2590,7 +2891,7 @@ fn hide_keyboard() {
 }
 
 /// Android TV: density-based scaling makes a 1080p TV only 960 points wide, which is phone-sized
-/// UI from across the room is huge. TVs get a scale that makes the screen 1440 points wide,
+/// UI from across the room is huge. TVs get a scale that makes the screen 1280 points wide,
 /// whatever its resolution. Slint resets the scale when the window is recreated, so this is
 /// checked regularly.
 fn fit_tv_scale(ui: &AppWindow) {
@@ -2604,7 +2905,8 @@ fn fit_tv_scale(ui: &AppWindow) {
         if width <= 0.0 {
             return;
         }
-        let want = (width / 1440.0).max(1.0);
+        ui.global::<Theme>().set_tv(true);
+        let want = (width / 1280.0).max(1.0);
         if (ui.window().scale_factor() - want).abs() > 0.01 {
             ui.window().dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: want });
         }
@@ -2653,6 +2955,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
         session::set_data_dir(dir.into());
     }
     let ui = AppWindow::new()?;
+    // Development: the TV look on a desktop window (ENCHEO_TV=1).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if std::env::var("ENCHEO_TV").is_ok_and(|v| !v.is_empty()) {
+        ui.global::<Theme>().set_tv(true);
+    }
     ui.global::<Theme>().set_buttons_in_content(cfg!(target_os = "macos"));
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     ui.global::<PlayerState>().set_window_modes(cfg!(not(any(target_os = "android", target_os = "ios"))));
@@ -2726,21 +3033,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
         })
         .map_err(|e| slint::PlatformError::Other(format!("rendering notifier: {e:?}")))?;
 
-    ui.on_open_link(|| {
-        #[cfg(not(target_os = "android"))]
-        let _ = open::that("https://plex.tv/link");
-    });
+    ui.on_open_link(|| open_url("https://plex.tv/link"));
+    ui.on_billboard_play(play_billboard);
+    ui.on_play_trailer(play_trailer);
     ui.on_new_code(begin_signin);
     ui.on_select_library(select_library);
     ui.on_open_item(|id| open_item(id.to_string()));
-    ui.on_sign_out(|| {
-        with_state(|s| {
-            s.session.sign_out();
-            s.server = None;
-            s.items.clear();
-        });
-        begin_signin();
-    });
     ui.on_skip_plex(|| {
         with_state(|s| {
             s.session.skip_plex = true;
@@ -2897,11 +3195,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.on_add_source(|kind, name, location, user, password| {
         shares::add_source(kind, name.to_string(), location.to_string(), user.to_string(), password.to_string())
     });
-    ui.on_remove_source(shares::remove_current);
+    ui.on_open_sources(shares::open_sources);
+    ui.on_new_source(shares::new_source);
+    ui.on_edit_source(|kind, index| shares::edit_source(&kind, index as usize));
+    ui.on_remove_source(|kind, index| shares::remove_source(&kind, index as usize));
     ui.on_scan(scan_network);
     ui.on_speed_test(speed_test);
     ui.set_can_speed_test(true);
     ui.global::<Nav>().on_key(|k| nav_key(k.as_str()));
+    ui.global::<Nav>().on_back(go_back);
+    ui.global::<Nav>().on_dialog_closed(settings_closed);
     ui.global::<Nav>().on_leave_search(|| {
         hide_keyboard();
         let ui = crate::ui();

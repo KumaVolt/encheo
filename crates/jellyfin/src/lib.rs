@@ -281,6 +281,17 @@ impl Server {
         Ok(Some(item))
     }
 
+    /// Trailer files the server has for a title.
+    pub async fn local_trailers(&self, id: &str) -> Result<Vec<Item>> {
+        self.items(&format!("/Users/{}/Items/{}/LocalTrailers?Fields={FIELDS}", self.uid(), self.raw_id(id))).await
+    }
+
+    /// Online trailers the server knows of (web addresses, usually YouTube).
+    pub async fn remote_trailers(&self, id: &str) -> Result<Vec<String>> {
+        let v = self.json(self.get(&format!("/Users/{}/Items/{}", self.uid(), self.raw_id(id)))).await?;
+        Ok(v["RemoteTrailers"].as_array().into_iter().flatten().filter_map(|t| t["Url"].as_str().map(String::from)).collect())
+    }
+
     /// Intro and credits, from Jellyfin's media segments (10.10+).
     async fn markers(&self, id: &str) -> Result<Vec<Marker>> {
         if self.login.flavor != Flavor::Jellyfin {

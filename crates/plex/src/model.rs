@@ -327,6 +327,12 @@ pub struct Item {
     #[serde(default)]
     pub child_count: Option<u32>,
 
+    /// Extras: what kind ("1" is a trailer), and the same as a word ("trailer").
+    #[serde(default, deserialize_with = "string_or_number")]
+    pub extra_type: String,
+    #[serde(default)]
+    pub subtype: Option<String>,
+
     #[serde(default, rename = "Genre")]
     pub genres: Vec<Tag>,
     #[serde(default, rename = "Director")]

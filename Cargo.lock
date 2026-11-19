@@ -1455,6 +1455,7 @@ dependencies = [
  "encheo-vfs",
  "glow",
  "image",
+ "jni 0.21.1",
  "libmpv2",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",

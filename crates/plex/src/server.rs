@@ -90,6 +90,12 @@ impl Server {
         Ok(self.list(&format!("/library/all?guid={g}")).await?.into_iter().next())
     }
 
+    /// Trailers, featurettes and other extras: files next to the title, and with Plex Pass,
+    /// trailers Plex finds online.
+    pub async fn extras(&self, rating_key: &str) -> Result<Vec<Item>> {
+        self.list(&format!("/library/metadata/{rating_key}/extras")).await
+    }
+
     /// Seasons of a show, episodes of a season, albums of an artist, or tracks of an album.
     pub async fn children(&self, rating_key: &str) -> Result<Vec<Item>> {
         self.list(&format!("/library/metadata/{rating_key}/children")).await
@@ -110,6 +116,10 @@ impl Server {
 
     /// URL mpv can open to play the file as is (direct play, no transcoding).
     pub fn stream_url(&self, part: &crate::Part) -> String {
+        // Online extras can point somewhere else entirely; those play as they are.
+        if part.key.starts_with("http") {
+            return part.key.clone();
+        }
         format!("{}{}?X-Plex-Token={}", self.base, part.key, self.token)
     }
 

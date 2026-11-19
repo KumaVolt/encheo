@@ -43,6 +43,19 @@ def related(key):
     return container(Hub=[{"title": "More Like This", "Metadata": same[:12]}])
 
 
+def trailer(key):
+    """Films have a trailer, so the details page shows its Trailer button."""
+    item = library.ITEMS[key]
+    if item["type"] != "movie":
+        return []
+    return [{
+        "ratingKey": f"{key}-trailer", "key": f"/library/metadata/{key}-trailer", "type": "clip",
+        "title": item["title"], "extraType": 1, "subtype": "trailer", "duration": 150000,
+        "thumb": item.get("art"),
+        "Media": [{"id": 1, "Part": [{"id": 1, "key": f"/library/parts/{key}-trailer/file.mp4"}]}],
+    }]
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
@@ -71,6 +84,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(metadata([library.ITEMS[key]]))
             if parts[3] == "children":
                 return self.json(metadata(sorted(library.children(key), key=lambda i: i.get("index", 0))))
+            if parts[3] == "extras":
+                return self.json(metadata(trailer(key)))
             if parts[3] == "allLeaves":
                 return self.json(metadata(sorted(library.all_leaves(key), key=lambda i: (i["parentIndex"], i["index"]))))
         if parts[:2] == ["hubs", "metadata"] and len(parts) == 4 and parts[2] in library.ITEMS:

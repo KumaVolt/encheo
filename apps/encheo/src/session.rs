@@ -18,6 +18,16 @@ pub struct Session {
     /// Jellyfin and Emby servers the user signed in to.
     #[serde(default)]
     pub media_servers: Vec<encheo_jellyfin::Login>,
+    /// Stable numbers for `sources` and `media_servers`, in the same order. Item ids, saved
+    /// progress and favourites carry these, so removing a source doesn't shift another's ids.
+    /// Sessions from before they existed get the positions, which is what ids used then.
+    #[serde(default)]
+    pub source_ids: Vec<usize>,
+    #[serde(default)]
+    pub media_server_ids: Vec<usize>,
+    /// The next number to hand out; numbers are never reused.
+    #[serde(default)]
+    pub next_id: usize,
     /// The user chose to use Encheo without Plex.
     #[serde(default)]
     pub skip_plex: bool,
@@ -79,7 +89,66 @@ impl Session {
             s.client_id = uuid::Uuid::new_v4().to_string();
             s.save();
         }
+        s.fill_ids();
         s
+    }
+
+    fn fill_ids(&mut self) {
+        for (ids, len) in [(&mut self.source_ids, self.sources.len()), (&mut self.media_server_ids, self.media_servers.len())] {
+            ids.truncate(len);
+            while ids.len() < len {
+                ids.push(ids.len());
+            }
+        }
+        let highest = self.source_ids.iter().chain(&self.media_server_ids).max().map_or(0, |n| n + 1);
+        self.next_id = self.next_id.max(highest);
+    }
+
+    fn new_id(&mut self) -> usize {
+        self.next_id += 1;
+        self.next_id - 1
+    }
+
+    /// Add a file source; returns its position.
+    pub fn add_source(&mut self, config: encheo_vfs::Config) -> usize {
+        let id = self.new_id();
+        self.sources.push(config);
+        self.source_ids.push(id);
+        self.save();
+        self.sources.len() - 1
+    }
+
+    pub fn remove_source(&mut self, index: usize) {
+        if index < self.sources.len() {
+            self.sources.remove(index);
+            self.source_ids.remove(index);
+            self.save();
+        }
+    }
+
+    /// Add a Jellyfin/Emby login, or put it in place of `replace` (a position) or of an earlier
+    /// login to the same server and user, keeping that one's number.
+    pub fn add_media_server(&mut self, login: encheo_jellyfin::Login, replace: Option<usize>) {
+        let same = replace.filter(|&i| i < self.media_servers.len()).or_else(|| {
+            self.media_servers.iter().position(|l| l.base_url == login.base_url && l.user_id == login.user_id)
+        });
+        match same {
+            Some(i) => self.media_servers[i] = login,
+            None => {
+                let id = self.new_id();
+                self.media_servers.push(login);
+                self.media_server_ids.push(id);
+            }
+        }
+        self.save();
+    }
+
+    pub fn remove_media_server(&mut self, index: usize) {
+        if index < self.media_servers.len() {
+            self.media_servers.remove(index);
+            self.media_server_ids.remove(index);
+            self.save();
+        }
     }
 
     pub fn save(&self) {
@@ -102,5 +171,36 @@ impl Session {
         self.token = None;
         self.server = None;
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Session;
+
+    fn source(name: &str) -> encheo_vfs::Config {
+        encheo_vfs::Config {
+            kind: encheo_vfs::Kind::Local,
+            name: name.into(),
+            location: format!("/{name}"),
+            username: String::new(),
+            password: String::new(),
+            host_key: None,
+        }
+    }
+
+    #[test]
+    fn source_numbers_stay_put() {
+        // Saving writes session.json: keep it away from the real one.
+        super::set_data_dir(std::env::temp_dir().join("encheo-session-test"));
+        // An older session: sources without numbers get their positions.
+        let mut s = Session { sources: vec![source("a"), source("b")], ..Default::default() };
+        s.fill_ids();
+        assert_eq!(s.source_ids, [0, 1]);
+        s.remove_source(0);
+        assert_eq!(s.source_ids, [1]);
+        // A new source never takes a number that was used before.
+        s.add_source(source("c"));
+        assert_eq!(s.source_ids, [1, 2]);
     }
 }

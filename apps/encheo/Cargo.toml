@@ -36,6 +36,7 @@ slint = { version = "1.18", default-features = false, features = ["std", "backen
 
 # Android: android-activity backend (Skia, asked for OpenGL ES).
 [target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
 slint = { version = "1.18", default-features = false, features = ["std", "backend-android-activity-06", "compat-1-2"] }
 
 # iOS: winit, Skia on Metal (Slint has no OpenGL on iOS).

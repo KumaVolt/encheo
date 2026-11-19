@@ -17,6 +17,19 @@ export struct Poster {
     square: bool,      // album and artist art
 }
 
+/// The big title at the top of Home.
+export struct Billboard {
+    id: string,        // empty: no billboard
+    title: string,
+    meta: string,      // "2024 · Drama, Mystery · 1 hr 57 min"
+    summary: string,
+    art-url: string,
+    image: image,
+    logo-url: string,  // the title as artwork, when the server has it
+    logo: image,
+    play-label: string,
+}
+
 export struct HomeRow {
     title: string,
     library: int,      // sidebar index for "See All", -1 for none
@@ -37,6 +50,15 @@ export struct FoundSource {
     label: string,     // "Jellyfin", "SMB", …
     name: string,
     address: string,
+}
+
+export struct SourceRow {
+    kind: string,      // "plex", "server" (Jellyfin/Emby) or "files"
+    index: int,        // place in its own list
+    title: string,
+    label: string,     // "Plex", "Jellyfin", "SMB", …
+    detail: string,    // address, user
+    signed-in: bool,   // Plex: false offers Sign In instead of Sign Out
 }
 
 export struct Score {
@@ -154,7 +176,7 @@ export global PlayerState {
 /// and touch users never see it.
 export global Nav {
     in-out property <bool> active;
-    in-out property <string> zone: "content";   // "side", "content", "detail"
+    in-out property <string> zone: "content";   // "side", "content", "detail", "dialog" (Settings)
     in-out property <int> row;
     in-out property <int> col;
     in-out property <int> grid-cols: 1;          // set by the library grid
@@ -167,6 +189,11 @@ export global Nav {
     in-out property <int> d-related: -1;
     // Arrow keys and Enter; returns whether the key was used.
     callback key(string) -> bool;
+    // Back (Android's Back button): closes a window or leaves a page; false when there's
+    // nothing to go back to, so Android can leave the app.
+    callback back() -> bool;
+    // Settings closed (any way): the focus goes back to where it was.
+    callback dialog-closed();
     // The search field gave up focus (Down / Back / Enter on it).
     callback leave-search();
     in-out property <int> refocus-request;    // bumped to give the window its keys back
@@ -192,6 +219,10 @@ export global Theme {
     in-out property <bool> buttons-in-content: true;
     out property <length> buttons-inset: buttons-in-content ? 84px : 20px;
     out property <length> sidebar-top: buttons-in-content ? header-height : 14px;
+    // Android TV: seen from the sofa with a remote. The sidebar shrinks to icons and opens when
+    // the remote moves into it.
+    in-out property <bool> tv: false;
+    out property <length> rail-width: 76px;
 }
 
 // ---------- Icons ----------
@@ -263,8 +294,8 @@ component Button inherits Rectangle {
     height: 36px;
     width: row.preferred-width + 32px;
     border-radius: 8px;
-    border-width: root.focused ? 2px : 0px;
-    border-color: root.primary ? white : Theme.accent;
+    border-width: root.focused ? 3px : 0px;
+    border-color: white;
     background: !root.enabled ? Theme.fill : root.primary ? (ta.has-hover ? Theme.accent.brighter(10%) : Theme.accent) : (ta.has-hover ? Theme.fill-hover : Theme.fill);
     row := HorizontalLayout {
         alignment: center;
@@ -304,6 +335,9 @@ component PosterCard inherits Rectangle {
         height: root.landscape ? 169px : root.data.square ? 150px : 225px;
         border-radius: root.landscape ? 12px : 10px;
         clip: true;
+        // The focused card grows a little, so it's easy to follow from across the room.
+        transform-scale: root.focused ? 1.07 : 1;
+        animate transform-scale { duration: 140ms; easing: ease-out; }
         background: Theme.card;
         drop-shadow-blur: ta.has-hover || root.focused ? 22px : 8px;
         drop-shadow-offset-y: ta.has-hover || root.focused ? 8px : 3px;
@@ -337,8 +371,8 @@ component PosterCard inherits Rectangle {
         Rectangle { background: ta.has-hover || root.focused ? #ffffff10 : transparent; }
         if root.focused: Rectangle {
             border-radius: parent.border-radius;
-            border-width: 3px;
-            border-color: Theme.accent;
+            border-width: 4px;
+            border-color: white;
         }
         if root.data.watched: Rectangle {
             x: parent.width - 28px;
@@ -361,16 +395,16 @@ component PosterCard inherits Rectangle {
         }
     }
     Text {
-        y: art.height + 9px;
+        y: art.height + (root.focused ? 16px : 9px);
         width: root.width;
         text: root.data.title;
-        color: Theme.text;
+        color: root.focused ? white : Theme.text;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: root.focused ? 800 : 600;
         overflow: elide;
     }
     Text {
-        y: art.height + 28px;
+        y: art.height + (root.focused ? 35px : 28px);
         width: root.width;
         text: root.data.subtitle;
         color: Theme.secondary;
@@ -400,8 +434,8 @@ component Shelf inherits VerticalLayout {
             // Keep the focused card inside the row's visible part.
             if (root.focused-index * (root.card-w + 22px) < -flick.content-x) {
                 flick.content-x = -(root.focused-index * (root.card-w + 22px));
-            } else if ((root.focused-index + 1) * (root.card-w + 22px) > -flick.content-x + flick.width) {
-                flick.content-x = -((root.focused-index + 1) * (root.card-w + 22px) - flick.width + 10px);
+            } else if (12px + (root.focused-index + 1) * (root.card-w + 22px) > -flick.content-x + flick.width) {
+                flick.content-x = -(12px + (root.focused-index + 1) * (root.card-w + 22px) - flick.width + 10px);
             }
             root.reveal(self.absolute-position.y, self.preferred-height);
         }
@@ -409,17 +443,18 @@ component Shelf inherits VerticalLayout {
     property <length> card-w: root.landscape ? 300px : 150px;
     property <length> card-h: (root.landscape ? 169px : root.square ? 150px : 225px) + 48px;
     HorizontalLayout {
+        padding-left: 12px;
         padding-right: 32px;
         Text { text: root.title; color: Theme.text; font-size: 22px; font-weight: 700; vertical-alignment: bottom; }
         Rectangle { horizontal-stretch: 1; }
         if root.see-all: LinkText { text: "See All"; vertical-alignment: bottom; clicked => { root.see-all-clicked(); } }
     }
     flick := Flickable {
-        height: root.card-h + 24px;     // room for the hover shadow
-        content-width: root.items.length * (root.card-w + 22px) + 10px;
+        height: root.card-h + 36px;     // room for the hover shadow and the focused card's growth
+        content-width: root.items.length * (root.card-w + 22px) + 34px;
         for p[i] in root.items: PosterCard {
-            x: i * (root.card-w + 22px);
-            y: 4px;
+            x: 12px + i * (root.card-w + 22px);
+            y: 12px;
             data: p;
             landscape: root.landscape;
             focused: i == root.focused-index;
@@ -480,22 +515,23 @@ component SideRow inherits Rectangle {
     in property <string> icon;
     in property <bool> active;
     in property <bool> focused;
+    in property <bool> narrow;     // TV rail closed: the icon only
     callback clicked();
-    height: 34px;
+    height: Theme.tv ? 44px : 34px;
     border-radius: 8px;
-    background: root.active ? Theme.selection : ta.has-hover ? Theme.fill : transparent;
-    border-width: root.focused ? 2px : 0px;
+    background: root.focused && Theme.tv ? white : root.active ? Theme.selection : ta.has-hover ? Theme.fill : transparent;
+    border-width: root.focused && !Theme.tv ? 2px : 0px;
     border-color: Theme.accent;
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: root.narrow ? 16px : 10px;
         padding-right: 10px;
-        spacing: 10px;
-        VerticalLayout { alignment: center; Icon { name: root.icon; width: 19px; height: 19px; tint: Theme.accent; } }
-        Text {
+        spacing: 12px;
+        VerticalLayout { alignment: center; Icon { name: root.icon; width: Theme.tv ? 22px : 19px; height: Theme.tv ? 22px : 19px; tint: root.focused && Theme.tv ? #111 : Theme.accent; } }
+        if !root.narrow: Text {
+            color: root.focused && Theme.tv ? #111 : Theme.text;
+            font-size: Theme.tv ? 16px : 14px;
             text: root.text;
-            color: Theme.text;
-            font-size: 14px;
-            font-weight: root.active ? 600 : 500;
+            font-weight: root.active || root.focused ? 700 : 500;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -573,32 +609,36 @@ component SearchField inherits Rectangle {
 component Sidebar inherits Rectangle {
     in property <[LibraryEntry]> libraries;
     in property <int> selected;   // -1 = Home, -2 = search results
-    in property <string> server-name;
-    in property <string> server-kind;
     in-out property <string> search-text;
     callback select(int);
-    callback sign-out();
     callback search(string);
-    callback add-source();
-    callback about();
-    width: 240px;
-    background: Theme.sidebar;
+    callback settings();
+    // TV: a rail of icons until the remote moves into it; then it opens over the content.
+    property <bool> open: !Theme.tv || (Nav.active && Nav.zone == "side");
+    property <bool> narrow: !root.open;
+    width: root.open ? 240px : Theme.rail-width;
+    animate width { duration: 160ms; easing: ease-out; }
+    clip: true;
+    background: Theme.tv ? (root.open ? #141416 : #17171a) : Theme.sidebar;
+    drop-shadow-blur: Theme.tv && root.open ? 40px : 0px;
+    drop-shadow-color: #000000c0;
     Rectangle { x: parent.width - 1px; width: 1px; background: Theme.separator; }
     VerticalLayout {
         padding: 12px;
-        padding-top: Theme.sidebar-top;      // window buttons sit above (macOS)
-        spacing: 2px;
-        SearchField {
+        padding-top: Theme.tv ? 40px : Theme.sidebar-top;      // window buttons sit above (macOS)
+        spacing: Theme.tv ? 6px : 2px;
+        if !root.narrow: SearchField {
             text <=> root.search-text;
             focused: Nav.active && Nav.zone == "side" && Nav.row == 0;
             search(q) => { root.search(q); }
             leave => { Nav.leave-search(); }
         }
+        if root.narrow: SideRow { text: "Search"; icon: "search"; narrow: true; active: root.selected == -2; }
         Rectangle { height: 14px; }
-        SideRow { text: "Home"; icon: "home"; active: root.selected == -1; focused: Nav.active && Nav.zone == "side" && Nav.row == 1; clicked => { root.select(-1); } }
+        SideRow { text: "Home"; icon: "home"; narrow: root.narrow; active: root.selected == -1; focused: Nav.active && Nav.zone == "side" && Nav.row == 1; clicked => { root.select(-1); } }
         for lib[i] in root.libraries: VerticalLayout {
             vertical-stretch: 0;
-            if i == 0 || root.libraries[i - 1].group != lib.group: Rectangle {
+            if !root.narrow && (i == 0 || root.libraries[i - 1].group != lib.group): Rectangle {
                 height: 36px;
                 vertical-stretch: 0;
                 Text {
@@ -612,34 +652,22 @@ component Sidebar inherits Rectangle {
                 }
             }
             SideRow {
-            text: lib.title;
-            icon: lib.kind;
-            active: root.selected == i;
-            focused: Nav.active && Nav.zone == "side" && Nav.row == i + 2;
-            clicked => { root.select(i); }
+                text: lib.title;
+                icon: lib.kind;
+                narrow: root.narrow;
+                active: root.selected == i;
+                focused: Nav.active && Nav.zone == "side" && Nav.row == i + 2;
+                clicked => { root.select(i); }
             }
-        }
-        Rectangle { height: 10px; }
-        SideRow {
-            text: "Add Source";
-            icon: "plus";
-            focused: Nav.active && Nav.zone == "side" && Nav.row == root.libraries.length + 2;
-            clicked => { root.add-source(); }
         }
         Rectangle { vertical-stretch: 1; }
-        Rectangle { height: 1px; background: Theme.separator; }
-        HorizontalLayout {
-            padding-top: 10px;
-            padding-left: 10px;
-            spacing: 8px;
-            VerticalLayout {
-                alignment: center;
-                Text { text: root.server-name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
-                Text { text: root.server-kind; color: Theme.tertiary; font-size: 11px; }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            IconButton { icon: "info"; size: 30px; icon-size: 15px; clicked => { root.about(); } }
-            IconButton { icon: "signout"; size: 30px; icon-size: 15px; clicked => { root.sign-out(); } }
+        // Sign out, sources and the rest live in Settings, out of the way.
+        SideRow {
+            text: "Settings";
+            icon: "settings";
+            narrow: root.narrow;
+            focused: Nav.active && Nav.zone == "side" && Nav.row == root.libraries.length + 2;
+            clicked => { root.settings(); }
         }
     }
 }
@@ -696,9 +724,10 @@ component AddSourceDialog inherits Rectangle {
     in property <string> status;
     in property <[FoundSource]> found;
     in property <bool> scanning;
+    in property <bool> editing;
     callback connect(int, string, string, string, string);
     callback cancel();
-    in-out property <int> kind: 1;   // 0 folder, 1 SMB, 2 WebDAV
+    in-out property <int> kind: 1;   // 0 folder, 1 SMB, 2 WebDAV, 3 Jellyfin/Emby, … 8 Plex
     in-out property <string> name;
     in-out property <string> location;
     in-out property <string> user;
@@ -717,8 +746,8 @@ component AddSourceDialog inherits Rectangle {
         form := VerticalLayout {
             padding: 24px;
             spacing: 14px;
-            Text { text: "Add a Source"; color: Theme.text; font-size: 20px; font-weight: 700; }
-            if root.found.length > 0 || root.scanning: VerticalLayout {
+            Text { text: root.editing ? "Edit Source" : "Add a Source"; color: Theme.text; font-size: 20px; font-weight: 700; }
+            if !root.editing && (root.found.length > 0 || root.scanning): VerticalLayout {
                 spacing: 6px;
                 Text { text: root.scanning ? "Looking on your network…" : "On your network"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
                 for f in root.found: Rectangle {
@@ -743,13 +772,13 @@ component AddSourceDialog inherits Rectangle {
                     }
                 }
             }
-            // Two rows: media servers and the common shares first.
-            HorizontalLayout {
+            // Two rows: media servers and the common shares first. An edit keeps its kind.
+            if !root.editing: HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
-                for k in [{ i: 3, t: "Jellyfin / Emby" }, { i: 1, t: "SMB" }, { i: 0, t: "Folder" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
+                for k in [{ i: 8, t: "Plex" }, { i: 3, t: "Jellyfin / Emby" }, { i: 1, t: "SMB" }, { i: 0, t: "Folder" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
             }
-            HorizontalLayout {
+            if !root.editing: HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
                 for k in [{ i: 2, t: "WebDAV" }, { i: 4, t: "SFTP" }, { i: 5, t: "FTP" }, { i: 6, t: "NFS" }, { i: 7, t: "DLNA" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
@@ -765,32 +794,255 @@ component AddSourceDialog inherits Rectangle {
                     : root.kind == 4 ? "A server you can reach over SSH, e.g. sftp://nas.local/volume1/video."
                     : root.kind == 5 ? "An FTP server, e.g. ftp://nas.local/video (ftps:// for encrypted)."
                     : root.kind == 6 ? "An NFS export, e.g. nfs://nas.local/volume1/video. No sign-in needed."
+                    : root.kind == 8 ? "Your Plex account. You'll get a code to enter at plex.tv/link, and your server's libraries appear in the sidebar."
                     : "A DLNA/UPnP media server (many NAS boxes and TVs). Pick it from the list above when it shows up.";
             }
-            Field {
+            if root.kind != 8: Field {
                 label: root.kind == 0 ? "Folder" : "Address";
                 placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : root.kind == 2 ? "https://server/path"
                     : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : root.kind == 5 ? "ftp://server/path"
                     : root.kind == 6 ? "nfs://server/export" : "http://server:8200/rootDesc.xml";
                 text <=> root.location;
             }
-            if root.kind != 0 && root.kind != 6 && root.kind != 7: HorizontalLayout {
+            if root.kind != 0 && root.kind != 6 && root.kind != 7 && root.kind != 8: HorizontalLayout {
                 spacing: 12px;
                 Field { label: "User name"; placeholder: root.kind == 1 ? "guest" : ""; text <=> root.user; }
-                Field { label: "Password"; secret: true; text <=> root.password; }
+                Field { label: "Password"; secret: true; placeholder: root.editing ? "Unchanged" : ""; text <=> root.password; }
             }
-            if root.kind != 3: Field { label: "Name (optional)"; placeholder: "Shown in the sidebar"; text <=> root.name; }
+            if root.kind != 3 && root.kind != 8: Field { label: "Name (optional)"; placeholder: "Shown in the sidebar"; text <=> root.name; }
             if root.status != "": Text { text: root.status; color: root.busy ? Theme.secondary : #ff8f80; font-size: 13px; wrap: word-wrap; }
             HorizontalLayout {
                 spacing: 10px;
                 alignment: end;
                 Button { text: "Cancel"; clicked => { root.cancel(); } }
                 Button {
-                    text: root.busy ? "Connecting…" : root.kind == 3 ? "Sign In" : "Connect";
+                    text: root.busy ? "Connecting…" : root.kind == 3 || root.kind == 8 ? "Sign In" : root.editing ? "Save" : "Connect";
                     primary: true;
-                    enabled: !root.busy && root.location != "";
+                    enabled: !root.busy && (root.location != "" || root.kind == 8);
                     clicked => { root.connect(root.kind, root.name, root.location, root.user, root.password); }
                 }
+            }
+        }
+    }
+}
+
+// Every source in one list: Plex, Jellyfin/Emby servers, then file sources. Edit and Remove per
+// row; Remove asks first, in the row itself.
+// Settings: where the media comes from (add, edit, remove, Plex sign-in/out), refresh and About.
+// Kept out of the way so a stray click or remote press can't sign anyone out.
+component SettingsDialog inherits Rectangle {
+    in property <[SourceRow]> sources;
+    in-out property <int> confirm: -1;   // the row asking "Remove?"
+    // Remote focus, set by Rust: rows are the sources, then the bottom buttons.
+    in property <int> focus-row: -1;
+    in property <int> focus-col: -1;
+    callback add();
+    callback edit(string, int);
+    callback remove(string, int);
+    callback sign-in();
+    callback refresh();
+    callback about();
+    callback close();
+    function f(r: int, c: int) -> bool { return root.focus-row == r && root.focus-col == c; }
+    changed focus-row => {
+        if (root.focus-row >= 0 && root.focus-row < root.sources.length) {
+            if (root.focus-row * 68px < -flick.content-y) {
+                flick.content-y = -(root.focus-row * 68px);
+            } else if ((root.focus-row + 1) * 68px > -flick.content-y + flick.height) {
+                flick.content-y = -((root.focus-row + 1) * 68px - flick.height);
+            }
+        }
+    }
+    background: #000000a0;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: Math.min(600px, root.width - 32px);
+        height: box.preferred-height;
+        border-radius: 16px;
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.separator;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #000000b0;
+        TouchArea { }
+        box := VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            HorizontalLayout {
+                Text { text: "Settings"; color: Theme.text; font-size: 22px; font-weight: 700; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                if !Theme.tv: IconButton { icon: "close"; size: 32px; icon-size: 14px; clicked => { root.close(); } }
+            }
+            Text { text: "Sources: where your films, shows and music come from."; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+            flick := Flickable {
+                height: Math.min(list.preferred-height, root.height - 260px);
+                content-height: list.preferred-height;
+                list := VerticalLayout {
+                    spacing: 8px;
+                    for row[i] in root.sources: Rectangle {
+                        height: 60px;
+                        border-radius: 10px;
+                        background: root.confirm == i ? Theme.fill-hover : Theme.fill;
+                        if root.confirm != i: HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 10px;
+                            spacing: 12px;
+                            VerticalLayout { alignment: center; Icon { name: row.kind == "files" ? "folder" : "film"; width: 20px; height: 20px; tint: Theme.accent; } }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 3px;
+                                horizontal-stretch: 1;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: row.title; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
+                                    Text { text: row.label; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                                }
+                                Text { text: row.detail; color: Theme.tertiary; font-size: 12px; overflow: elide; }
+                            }
+                            if row.kind == "plex" && !row.signed-in: VerticalLayout { alignment: center; Button { text: "Sign In"; primary: true; focused: root.f(i, 0); clicked => { root.sign-in(); } } }
+                            if row.kind != "plex": VerticalLayout { alignment: center; Button { text: "Edit"; focused: root.f(i, 0); clicked => { root.edit(row.kind, row.index); } } }
+                            if row.kind != "plex" || row.signed-in: VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    text: row.kind == "plex" ? "Sign Out" : "Remove";
+                                    focused: root.f(i, row.kind == "plex" ? 0 : 1);
+                                    clicked => { root.confirm = i; }
+                                }
+                            }
+                        }
+                        if root.confirm == i: HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 10px;
+                            spacing: 10px;
+                            Text {
+                                text: row.kind == "plex" ? "Sign out of Plex on this device?" : "Remove “" + row.title + "” from Encheo?";
+                                color: Theme.text;
+                                font-size: 14px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            VerticalLayout { alignment: center; Button { text: "Cancel"; focused: root.f(i, 0); clicked => { root.confirm = -1; } } }
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    text: row.kind == "plex" ? "Sign Out" : "Remove";
+                                    primary: true;
+                                    focused: root.f(i, 1);
+                                    clicked => {
+                                        root.confirm = -1;
+                                        root.remove(row.kind, row.index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                padding-top: 4px;
+                Button { text: "Refresh"; icon: "refresh"; focused: root.f(root.sources.length, 0); clicked => { root.refresh(); } }
+                Button { text: "About"; icon: "info"; focused: root.f(root.sources.length, 1); clicked => { root.about(); } }
+                Rectangle { horizontal-stretch: 1; }
+                Button { text: "Add Source"; icon: "plus"; primary: true; focused: root.f(root.sources.length, 2); clicked => { root.add(); } }
+            }
+        }
+    }
+}
+
+// Netflix-style buttons: white for the main action, grey glass for the rest.
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> light;
+    in property <bool> focused;
+    callback clicked();
+    height: Theme.tv ? 50px : 44px;
+    width: row.preferred-width + 40px;
+    Rectangle {
+        border-radius: 8px;
+        background: root.light ? (ta.has-hover ? #ffffffd8 : white) : (ta.has-hover ? #8a8a8cb8 : #6d6d6ea0);
+        transform-scale: root.focused ? 1.06 : 1;
+        animate transform-scale { duration: 140ms; easing: ease-out; }
+        row := HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            if root.icon != "": VerticalLayout { alignment: center; Icon { name: root.icon; width: 18px; height: 18px; stroke: 2.2px; tint: root.light ? #111 : white; } }
+            Text { text: root.text; color: root.light ? #111 : white; font-size: Theme.tv ? 18px : 16px; font-weight: 700; vertical-alignment: center; }
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component BillboardView inherits Rectangle {
+    in property <Billboard> data;
+    in property <bool> compact;
+    in property <length> pad;
+    in property <length> top-space;      // the header floats over the picture
+    in property <int> focused-col: -1;   // remote focus: 0 Play, 1 More Info
+    callback play();
+    callback info();
+    clip: true;
+    Image { width: parent.width; height: parent.height; source: root.data.image; image-fit: cover; }
+    // Darken the left for the text, then fade into the page so there's no edge at the bottom.
+    if !root.compact: Rectangle { background: @linear-gradient(90deg, #000000b0 0%, #00000000 62%); }
+    Rectangle { background: @linear-gradient(180deg, #00000080 0%, #00000000 25%, #1c1c1e00 55%, Theme.bg 100%); }
+    TouchArea { clicked => { root.info(); } }
+    VerticalLayout {
+        x: root.pad;
+        y: parent.height - self.height - (root.compact ? 12px : 36px);
+        width: root.compact ? parent.width - 2 * root.pad : Math.min(parent.width * 0.5, 620px);
+        height: self.preferred-height;
+        spacing: 12px;
+        if root.data.logo.width > 0: Image {
+            source: root.data.logo;
+            height: root.compact ? 70px : 120px;
+            image-fit: contain;
+            horizontal-alignment: root.compact ? center : left;
+        }
+        if root.data.logo.width == 0: Text {
+            text: root.data.title;
+            color: white;
+            font-size: root.compact ? 30px : Theme.tv ? 50px : 44px;
+            font-weight: 800;
+            wrap: word-wrap;
+            horizontal-alignment: root.compact ? center : left;
+        }
+        Text {
+            text: root.data.meta;
+            color: #ffffffcc;
+            font-size: root.compact ? 13px : 16px;
+            font-weight: 600;
+            horizontal-alignment: root.compact ? center : left;
+            overflow: elide;
+        }
+        if !root.compact && root.data.summary != "": Text {
+            text: root.data.summary;
+            color: #ffffffe6;
+            font-size: Theme.tv ? 18px : 16px;
+            wrap: word-wrap;
+            max-height: 3 * (Theme.tv ? 25px : 22px);
+            overflow: elide;
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            padding-top: 6px;
+            alignment: root.compact ? center : start;
+            Pill {
+                text: root.data.play-label;
+                icon: "play";
+                light: root.focused-col != 1;
+                focused: root.focused-col == 0;
+                clicked => { root.play(); }
+            }
+            Pill {
+                text: "More Info";
+                icon: "info";
+                light: root.focused-col == 1;
+                focused: root.focused-col == 1;
+                clicked => { root.info(); }
             }
         }
     }
@@ -799,65 +1051,34 @@ component AddSourceDialog inherits Rectangle {
 component Home inherits Rectangle {
     in property <[LibraryEntry]> libraries;
     in property <int> selected;
-    in property <string> server-name;
-    in property <string> server-kind;
     in property <[Poster]> continue-watching;
     in property <[HomeRow]> rows;
+    in property <Billboard> billboard;
     in property <[Poster]> grid;
     in property <string> grid-title;
     in property <bool> grid-square;
     in property <bool> loading;
     in property <length> bottom-inset;
     in-out property <string> search-text;
-    in property <bool> can-remove;
     in property <bool> can-speed-test;
     callback speed-test();
     callback select(int);
     callback open(string);
-    callback sign-out();
     callback search(string);
-    callback refresh();
-    callback add-source();
-    callback remove-source();
-    callback about();
+    callback settings();
+    callback billboard-play();
     background: Theme.bg;
 
     // Phones and narrow windows: no sidebar; search and library chips across the top instead.
     property <bool> compact: root.width < 720px;
-    property <length> content-x: root.compact ? 0 : side.width;
+    // TV: the sidebar is a rail of icons that opens over the content, so the content stays put.
+    property <length> content-x: root.compact ? 0 : Theme.tv ? Theme.rail-width : side.width;
     property <length> content-w: root.width - root.content-x;
     property <length> top: root.compact ? Theme.header-height + 92px : Theme.header-height;
-    property <length> pad: root.compact ? 16px : 32px;
-
-    // Header strip, aligned with the window buttons.
-    Rectangle {
-        x: root.content-x;
-        y: 0;
-        width: root.content-w;
-        height: Theme.header-height;
-        HorizontalLayout {
-            padding-left: root.pad;
-            padding-right: 16px;
-            Text {
-                text: root.selected == -1 ? "Home" : root.grid-title;
-                color: Theme.text;
-                font-size: 15px;
-                font-weight: 700;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-            Rectangle { horizontal-stretch: 1; }
-            if root.loading: Text { text: "Loading…"; color: Theme.tertiary; font-size: 12px; vertical-alignment: center; }
-            Rectangle { width: 12px; }
-            if root.can-speed-test && root.selected >= 0: VerticalLayout { alignment: center; IconButton { icon: "gauge"; size: 32px; icon-size: 16px; clicked => { root.speed-test(); } } }
-            if root.can-speed-test && root.selected >= 0: Rectangle { width: 8px; }
-            if root.can-remove && root.selected >= 0: VerticalLayout { alignment: center; IconButton { icon: "trash"; size: 32px; icon-size: 15px; clicked => { root.remove-source(); } } }
-            if root.can-remove && root.selected >= 0: Rectangle { width: 8px; }
-            VerticalLayout { alignment: center; IconButton { icon: "refresh"; size: 32px; icon-size: 16px; clicked => { root.refresh(); } } }
-            if root.compact: Rectangle { width: 8px; }
-            if root.compact: VerticalLayout { alignment: center; IconButton { icon: "signout"; size: 32px; icon-size: 15px; clicked => { root.sign-out(); } } }
-        }
-    }
+    property <length> pad: root.compact ? 16px : Theme.tv ? 48px : 32px;
+    property <bool> has-billboard: root.billboard.id != "";
+    // Wide screens: the header floats over the billboard's picture.
+    property <length> home-top: root.has-billboard && !root.compact ? 0 : root.top;
 
     // Compact: search and library chips under the header.
     if root.compact: VerticalLayout {
@@ -877,14 +1098,16 @@ component Home inherits Rectangle {
                 spacing: 8px;
                 Chip { text: "Home"; active: root.selected == -1; clicked => { root.select(-1); } }
                 for lib[i] in root.libraries: Chip { text: lib.title; active: root.selected == i; clicked => { root.select(i); } }
-                Chip { text: "+ Source"; clicked => { root.add-source(); } }
             }
         }
     }
 
     // Keyboard/remote focus helpers.
     property <bool> nav-content: Nav.active && Nav.zone == "content";
+    property <int> bb-rows: root.has-billboard ? 1 : 0;
     property <int> cw-rows: root.continue-watching.length > 0 ? 1 : 0;
+    property <int> nav-row: root.nav-content ? Nav.row : -1;
+    changed nav-row => { if (self.nav-row == 0 && root.has-billboard) { shelf-view.content-y = 0; } }
 
     // Scroll the shelves so a focused row (window coordinates) is fully visible.
     function reveal(top: length, height: length) {
@@ -896,41 +1119,52 @@ component Home inherits Rectangle {
         }
     }
 
-    // Home: shelves.
+    // Home: billboard, then shelves.
     shelf-view := Flickable {
         visible: root.selected == -1;
         x: root.content-x;
-        y: root.top;
+        y: root.home-top;
         width: root.content-w;
-        height: root.height - root.top;
+        height: root.height - root.home-top;
         content-height: shelves.preferred-height;
         shelves := VerticalLayout {
-            padding-left: root.pad;
-            padding-top: 8px;
             padding-bottom: 32px + root.bottom-inset;
-            spacing: 28px;
-            if root.continue-watching.length > 0: Shelf {
-                title: "Continue Watching";
-                items: root.continue-watching;
-                landscape: true;
-                focused-index: root.nav-content && Nav.row == 0 ? Nav.col : -1;
-                open(id) => { root.open(id); }
-                reveal(t, hh) => { root.reveal(t, hh); }
+            if root.has-billboard: BillboardView {
+                height: root.compact ? Math.min(root.content-w * 1.15, 560px) : Math.max(420px, Math.min(root.height * 0.68, root.content-w * 0.5));
+                data: root.billboard;
+                compact: root.compact;
+                pad: root.pad;
+                focused-col: root.nav-content && Nav.row == 0 ? Nav.col : -1;
+                play => { root.billboard-play(); }
+                info => { root.open(root.billboard.id); }
             }
-            for row[ri] in root.rows: Shelf {
-                focused-index: root.nav-content && Nav.row == ri + root.cw-rows ? Nav.col : -1;
-                reveal(t, hh) => { root.reveal(t, hh); }
-                title: row.title;
-                items: row.items;
-                landscape: row.landscape;
-                square: row.square;
-                see-all: row.library >= 0;
-                open(id) => { root.open(id); }
-                see-all-clicked => { root.select(row.library); }
-            }
-            if root.continue-watching.length == 0 && root.rows.length == 0 && !root.loading: Text {
-                text: "Nothing here yet.";
-                color: Theme.secondary;
+            VerticalLayout {
+                padding-left: root.pad - 12px;
+                padding-top: 8px;
+                spacing: 28px;
+                if root.continue-watching.length > 0: Shelf {
+                    title: "Continue Watching";
+                    items: root.continue-watching;
+                    landscape: true;
+                    focused-index: root.nav-content && Nav.row == root.bb-rows ? Nav.col : -1;
+                    open(id) => { root.open(id); }
+                    reveal(t, hh) => { root.reveal(t, hh); }
+                }
+                for row[ri] in root.rows: Shelf {
+                    focused-index: root.nav-content && Nav.row == ri + root.bb-rows + root.cw-rows ? Nav.col : -1;
+                    reveal(t, hh) => { root.reveal(t, hh); }
+                    title: row.title;
+                    items: row.items;
+                    landscape: row.landscape;
+                    square: row.square;
+                    see-all: row.library >= 0;
+                    open(id) => { root.open(id); }
+                    see-all-clicked => { root.select(row.library); }
+                }
+                if root.continue-watching.length == 0 && root.rows.length == 0 && !root.loading: Text {
+                    text: "Nothing here yet.";
+                    color: Theme.secondary;
+                }
             }
         }
     }
@@ -952,10 +1186,10 @@ component Home inherits Rectangle {
         property <int> focus-row: root.nav-content ? Nav.row : -1;
         changed focus-row => {
             if (self.focus-row >= 0) {
-                if (8px + self.focus-row * (self.card-h + self.gap) < -grid-view.content-y) {
+                if (12px + self.focus-row * (self.card-h + self.gap) < -grid-view.content-y) {
                     grid-view.content-y = -(self.focus-row * (self.card-h + self.gap));
-                } else if (8px + (self.focus-row + 1) * (self.card-h + self.gap) > -grid-view.content-y + grid-view.height) {
-                    grid-view.content-y = -(8px + (self.focus-row + 1) * (self.card-h + self.gap) - grid-view.height + 16px);
+                } else if (12px + (self.focus-row + 1) * (self.card-h + self.gap) > -grid-view.content-y + grid-view.height) {
+                    grid-view.content-y = -(12px + (self.focus-row + 1) * (self.card-h + self.gap) - grid-view.height + 16px);
                 }
             }
         }
@@ -963,7 +1197,7 @@ component Home inherits Rectangle {
             content-height: ceil(root.grid.length / gridbox.cols) * (gridbox.card-h + gridbox.gap) + gridbox.pad + root.bottom-inset;
             for p[i] in root.grid: PosterCard {
                 x: gridbox.pad + mod(i, gridbox.cols) * (gridbox.card-w + gridbox.gap);
-                y: 8px + Math.floor(i / gridbox.cols) * (gridbox.card-h + gridbox.gap);
+                y: 12px + Math.floor(i / gridbox.cols) * (gridbox.card-h + gridbox.gap);
                 data: p;
                 focused: root.nav-content && Nav.row * gridbox.cols + Nav.col == i;
                 clicked => { root.open(p.id); }
@@ -976,20 +1210,45 @@ component Home inherits Rectangle {
         }
     }
 
+    // Header strip, aligned with the window buttons; over the billboard on Home, and given a
+    // background once the rows scroll up under it.
+    Rectangle {
+        x: root.content-x;
+        y: 0;
+        width: root.content-w;
+        height: Theme.header-height;
+        background: root.selected == -1 && root.home-top == 0 && shelf-view.content-y < -20px ? Theme.bg : transparent;
+        animate background { duration: 150ms; }
+        HorizontalLayout {
+            padding-left: root.pad;
+            padding-right: 16px;
+            Text {
+                text: root.selected == -1 ? "Home" : root.grid-title;
+                color: Theme.text;
+                font-size: Theme.tv ? 18px : 15px;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.loading: Text { text: "Loading…"; color: Theme.tertiary; font-size: 12px; vertical-alignment: center; }
+            Rectangle { width: 12px; }
+            if root.can-speed-test && root.selected >= 0 && !Theme.tv: VerticalLayout { alignment: center; IconButton { icon: "gauge"; size: 32px; icon-size: 16px; clicked => { root.speed-test(); } } }
+            // Phones have no sidebar: Settings sits here instead.
+            if root.compact: VerticalLayout { alignment: center; IconButton { icon: "settings"; size: 36px; icon-size: 17px; clicked => { root.settings(); } } }
+        }
+    }
+
     side := Sidebar {
         x: 0;
         visible: !root.compact;
         height: parent.height;
         libraries: root.libraries;
         selected: root.selected;
-        server-name: root.server-name;
-        server-kind: root.server-kind;
         search-text <=> root.search-text;
         select(i) => { root.select(i); }
-        sign-out => { root.sign-out(); }
         search(q) => { root.search(q); }
-        add-source => { root.add-source(); }
-        about => { root.about(); }
+        settings => { root.settings(); }
     }
 }
 
@@ -1139,6 +1398,7 @@ component Detail inherits Rectangle {
     in property <string> file-name;
     in property <string> play-label;
     in property <bool> can-restart;
+    in property <bool> can-trailer;
     in property <bool> watched;
     in property <bool> can-mark-watched;
     in property <bool> can-favourite;
@@ -1157,6 +1417,7 @@ component Detail inherits Rectangle {
     callback back();
     callback play();
     callback play-from-start();
+    callback play-trailer();
     callback toggle-watched();
     callback toggle-favourite();
     callback open(string);
@@ -1167,10 +1428,14 @@ component Detail inherits Rectangle {
     property <bool> expanded: false;
     property <bool> nav: Nav.active && Nav.zone == "detail";
     // Column of each action in the actions row (row 0), -1 when not shown.
+    // Same order as detail_activate in lib.rs: Play, Trailer, From the beginning, Watched, Favourite.
     property <int> play-col: root.play-label != "" ? 0 : -1;
-    property <int> restart-col: root.can-restart ? (root.play-label != "" ? 1 : 0) : -1;
-    property <int> watched-col: root.can-mark-watched ? (root.play-label != "" ? 1 : 0) + (root.can-restart ? 1 : 0) : -1;
-    property <int> favourite-col: root.can-favourite ? (root.play-label != "" ? 1 : 0) + (root.can-restart ? 1 : 0) + (root.can-mark-watched ? 1 : 0) : -1;
+    property <int> n-play: root.play-label != "" ? 1 : 0;
+    property <int> trailer-col: root.can-trailer ? root.n-play : -1;
+    property <int> n-trailer: root.can-trailer ? 1 : 0;
+    property <int> restart-col: root.can-restart ? root.n-play + root.n-trailer : -1;
+    property <int> watched-col: root.can-mark-watched ? root.n-play + root.n-trailer + (root.can-restart ? 1 : 0) : -1;
+    property <int> favourite-col: root.can-favourite ? root.n-play + root.n-trailer + (root.can-restart ? 1 : 0) + (root.can-mark-watched ? 1 : 0) : -1;
     function action-focused(c: int) -> bool { return root.nav && Nav.row == 0 && Nav.col == c && c >= 0; }
     // Scroll so a focused element (window coordinates) is fully visible; the first row scrolls to the top.
     function reveal(top: length, height: length) {
@@ -1237,6 +1502,10 @@ component Detail inherits Rectangle {
                     HorizontalLayout {
                         spacing: 14px;
                         alignment: start;
+                        if root.can-trailer: VerticalLayout {
+                            alignment: center;
+                            Pill { text: "Trailer"; icon: "film"; light: root.action-focused(root.trailer-col); focused: root.action-focused(root.trailer-col); clicked => { root.play-trailer(); } }
+                        }
                         if root.can-restart: RoundAction { icon: "restart"; tip: "From the beginning"; focused: root.action-focused(root.restart-col); clicked => { root.play-from-start(); } }
                         if root.can-mark-watched: RoundAction {
                             icon: "eye";
@@ -1280,6 +1549,12 @@ component Detail inherits Rectangle {
                         if root.can-restart: RoundAction { icon: "restart"; clicked => { root.play-from-start(); } }
                         if root.can-mark-watched: RoundAction { icon: "eye"; active: root.watched; clicked => { root.toggle-watched(); } }
                         if root.can-favourite: RoundAction { icon: "heart"; active: root.favourite; clicked => { root.toggle-favourite(); } }
+                    }
+                    // Spelled out: an icon alone doesn't say "trailer".
+                    if root.compact && root.can-trailer: HorizontalLayout {
+                        alignment: start;
+                        padding-bottom: 6px;
+                        Pill { text: "Trailer"; icon: "film"; clicked => { root.play-trailer(); } }
                     }
                     HorizontalLayout {
                         spacing: 14px;
@@ -1340,7 +1615,7 @@ component Detail inherits Rectangle {
                 }
             }
             if root.kind == "artist": VerticalLayout {
-                padding-left: root.pad;
+                padding-left: root.pad - 12px;   // the shelf keeps 12px for the focused card
                 padding-top: 32px;
                 Shelf {
                     title: "Albums"; items: root.albums; square: true;
@@ -1373,7 +1648,7 @@ component Detail inherits Rectangle {
                 }
             }
             if root.related.length > 0: VerticalLayout {
-                padding-left: root.pad;
+                padding-left: root.pad - 12px;   // the shelf keeps 12px for the focused card
                 padding-top: 36px;
                 Shelf {
                     title: "More Like This"; items: root.related; square: root.kind == "artist" || root.kind == "album";
@@ -1894,10 +2169,10 @@ export component AppWindow inherits Window {
     // Home
     in property <[LibraryEntry]> libraries;
     in-out property <int> selected-library: -1;
-    in property <string> server-name;
-    in property <string> server-kind;
     in property <[Poster]> continue-watching;
     in property <[HomeRow]> home-rows;
+    in property <Billboard> billboard;
+    callback billboard-play();
     in property <[Poster]> grid;
     in property <string> grid-title;
     in property <bool> grid-square;
@@ -1905,9 +2180,17 @@ export component AppWindow inherits Window {
     in-out property <string> search-text;
     callback select-library(int);
     callback open-item(string);
-    callback sign-out();
-    in property <bool> grid-can-remove;
     in-out property <bool> add-source-open;
+    in-out property <bool> sources-open;    // the Settings window
+    in-out property <int> sources-confirm: -1;
+    in property <[SourceRow]> sources;
+    // The add/edit form's fields, so an edit can fill them in.
+    in-out property <int> form-kind: 1;
+    in-out property <string> form-name;
+    in-out property <string> form-location;
+    in-out property <string> form-user;
+    in-out property <string> form-password;
+    in property <bool> form-editing;
     in-out property <bool> about-open;
     in property <string> app-version;
     in property <bool> add-source-busy;
@@ -1918,7 +2201,10 @@ export component AppWindow inherits Window {
     callback speed-test();
     callback add-source(int, string, string, string, string);
     callback scan();
-    callback remove-source();
+    callback open-sources();
+    callback new-source();
+    callback edit-source(string, int);
+    callback remove-source(string, int);
     callback search(string);
     callback refresh();
 
@@ -1940,6 +2226,7 @@ export component AppWindow inherits Window {
     in property <string> detail-summary-full;
     in property <string> detail-file;
     in property <bool> detail-can-restart;
+    in property <bool> detail-can-trailer;
     in property <bool> detail-watched;
     in property <bool> detail-can-mark-watched;
     in property <bool> detail-can-favourite;
@@ -1948,6 +2235,7 @@ export component AppWindow inherits Window {
     in property <[Score]> scores;
     in property <[Poster]> related;
     callback play-from-start();
+    callback play-trailer();
     callback toggle-watched();
     callback toggle-favourite();
     callback back();
@@ -1983,6 +2271,7 @@ export component AppWindow inherits Window {
     changed refocus => { keys.focus(); }
     keys := FocusScope {
         key-pressed(e) => {
+            if (e.text == Key.Back && root.screen == "home" && Nav.back()) { return accept; }
             if (root.screen == "player") {
                 PlayerState.poke();
                 if (e.text == " " || e.text == "k" || e.text == Key.Return) { PlayerState.toggle-pause(); return accept; }
@@ -2031,10 +2320,10 @@ export component AppWindow inherits Window {
         height: root.height - root.inset-top - root.inset-bottom;
         libraries: root.libraries;
         selected: root.selected-library;
-        server-name: root.server-name;
-        server-kind: root.server-kind;
         continue-watching: root.continue-watching;
         rows: root.home-rows;
+        billboard: root.billboard;
+        billboard-play => { root.billboard-play(); }
         grid: root.grid;
         grid-title: root.grid-title;
         grid-square: root.grid-square;
@@ -2043,15 +2332,10 @@ export component AppWindow inherits Window {
         bottom-inset: root.music-active ? 96px : 0px;
         select(i) => { root.select-library(i); }
         open(id) => { root.open-item(id); }
-        sign-out => { root.sign-out(); }
         search(q) => { root.search(q); }
-        refresh => { root.refresh(); }
-        can-remove: root.grid-can-remove;
-        add-source => { root.add-source-status = ""; root.add-source-open = true; root.scan(); }
+        settings => { root.open-sources(); }
         can-speed-test: root.can-speed-test;
         speed-test => { root.speed-test(); }
-        remove-source => { root.remove-source(); }
-        about => { root.about-open = true; }
     }
     if root.screen == "detail": Detail {
         y: root.inset-top;
@@ -2082,6 +2366,8 @@ export component AppWindow inherits Window {
         related: root.related;
         bottom-inset: root.music-active ? 96px : 0px;
         play-from-start => { root.play-from-start(); }
+        can-trailer: root.detail-can-trailer;
+        play-trailer => { root.play-trailer(); }
         toggle-watched => { root.toggle-watched(); }
         toggle-favourite => { root.toggle-favourite(); }
         open(id) => { root.open-item(id); }
@@ -2115,9 +2401,38 @@ export component AppWindow inherits Window {
         seek-to(t) => { root.music-seek-to(t); }
     }
 
+    changed sources-open => { if (!self.sources-open) { Nav.dialog-closed(); } }
+    if root.sources-open: SettingsDialog {
+        y: root.inset-top;
+        height: root.height - root.inset-top - root.inset-bottom;
+        sources: root.sources;
+        confirm <=> root.sources-confirm;
+        focus-row: Nav.active && Nav.zone == "dialog" ? Nav.row : -1;
+        focus-col: Nav.col;
+        refresh => {
+            root.sources-open = false;
+            root.refresh();
+        }
+        about => { root.about-open = true; }
+        add => { root.new-source(); }
+        edit(k, i) => { root.edit-source(k, i); }
+        remove(k, i) => { root.remove-source(k, i); }
+        sign-in => {
+            root.sources-open = false;
+            root.new-code();
+        }
+        close => { root.sources-open = false; }
+    }
+
     if root.add-source-open: AddSourceDialog {
         y: root.inset-top;
         height: root.height - root.inset-top - root.inset-bottom;
+        editing: root.form-editing;
+        kind <=> root.form-kind;
+        name <=> root.form-name;
+        location <=> root.form-location;
+        user <=> root.form-user;
+        password <=> root.form-password;
         busy: root.add-source-busy;
         status: root.add-source-status;
         found: root.found-sources;
@@ -2149,7 +2464,7 @@ export component AppWindow inherits Window {
                 Text { text: "github.com/KumaVolt/encheo"; color: Theme.tertiary; font-size: 12px; horizontal-alignment: center; }
                 Rectangle { height: 8px; }
                 AboutSlint { }
-                HorizontalLayout { alignment: center; Button { text: "Close"; clicked => { root.about-open = false; } } }
+                HorizontalLayout { alignment: center; Button { text: "Close"; focused: Nav.active; clicked => { root.about-open = false; } } }
             }
         }
     }
