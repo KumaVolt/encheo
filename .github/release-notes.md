@@ -1,7 +1,13 @@
 Preview of Encheo, an open-source media player for Windows, Linux, macOS, Android (phones and
 Android TV) and, experimentally, iPhone and iPad. Early software: expect rough edges.
 
-## New in 0.4.0
+## New in 0.4.1
+
+- **Windows installer:** `encheo-windows-x86_64-setup.exe` installs Encheo with a Start menu entry
+  and an uninstaller. The zip is still there as a portable version
+- **Windows:** no more black console window opening behind the app
+
+## In 0.4.0
 
 - **Featured title on Home:** a large banner with the artwork, summary and Play / More Info
 - **Trailers:** a Trailer button on film and show pages when your Plex or Jellyfin/Emby server has
@@ -41,7 +47,8 @@ Android TV) and, experimentally, iPhone and iPad. Early software: expect rough e
 | File | Platform | Notes |
 |---|---|---|
 | `encheo-macos-arm64.zip` | macOS, Apple silicon | Needs libmpv: `brew install mpv`. Not notarized yet: right-click the app → Open the first time |
-| `encheo-windows-x86_64.zip` | Windows 10/11, 64-bit | Unzip and run `encheo.exe`. Not code-signed yet, so SmartScreen may warn |
+| `encheo-windows-x86_64-setup.exe` | Windows 10/11, 64-bit | Installer: adds Encheo to the Start menu, no administrator rights needed. Not code-signed yet, so SmartScreen may warn: More info → Run anyway |
+| `encheo-windows-x86_64.zip` | Windows 10/11, 64-bit | Portable: unzip the whole folder first, then run `encheo.exe` (it needs `libmpv-2.dll` next to it) |
 | `encheo-linux-x86_64.tar.gz` | Linux, x86-64 | Needs libmpv: `sudo apt install libmpv2` (or your distro's package) |
 | `encheo-ios.ipa` | iPhone and iPad, iOS 16+ (experimental) | Unsigned: install with AltStore or SideStore, which sign it with your Apple ID. Video playback is new and only tested in the simulator |
 | `encheo-android-arm64.apk` | Android 8+ phones, tablets, Android TV (arm64) | Sideload. Signed with a temporary key: uninstall before installing a later preview |
