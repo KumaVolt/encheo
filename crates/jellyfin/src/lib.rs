@@ -4,7 +4,7 @@
 //! Items come back as [`encheo_plex::Item`], the app's item shape, with ids prefixed so the app
 //! can tell which server an item belongs to. Image fields hold full URLs.
 
-use encheo_plex::{Item, ItemKind, Library, Marker, MarkerKind, Media, Part, PlayState, Rating, Role, Stream, Tag};
+use encheo_plex::{Filter, FilterOptions, Item, ItemKind, Library, LibraryQuery, Marker, MarkerKind, Media, Part, PlayState, Rating, Role, Sort, Stream, Tag, Watched};
 use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -59,7 +59,7 @@ pub struct Server {
     prefix: String,
 }
 
-const FIELDS: &str = "Overview,Genres,ProductionLocations,People,MediaSources,MediaStreams,ProviderIds,OfficialRating,CriticRating,CommunityRating,ProductionYear,DateCreated,ChildCount,RecursiveItemCount,ParentId,Path,Taglines";
+const FIELDS: &str = "Overview,SortName,Genres,ProductionLocations,People,MediaSources,MediaStreams,ProviderIds,OfficialRating,CriticRating,CommunityRating,ProductionYear,DateCreated,ChildCount,RecursiveItemCount,ParentId,Path,Taglines";
 
 fn http() -> reqwest::Client {
     encheo_plex::with_platform_roots(reqwest::Client::builder())
@@ -235,17 +235,49 @@ impl Server {
         }
     }
 
-    /// A page of a library, sorted by name. `kind` is the library's kind ("movie", "show", "artist").
-    pub async fn library_items(&self, library_key: &str, kind: &str, start: u32, size: u32) -> Result<encheo_plex::Page> {
+    /// A page of a library, sorted and filtered by `query`. `kind` is the library's kind
+    /// ("movie", "show", "artist").
+    pub async fn library_items(&self, library_key: &str, kind: &str, query: &LibraryQuery, start: u32, size: u32) -> Result<encheo_plex::Page> {
         let types = if kind == "artist" { "MusicAlbum" } else { Self::library_types(kind) };
         let path = format!(
-            "/Users/{}/Items?ParentId={}&Recursive=true&IncludeItemTypes={types}&SortBy=SortName&SortOrder=Ascending&StartIndex={start}&Limit={size}&Fields={FIELDS}",
+            "/Users/{}/Items?ParentId={}&Recursive=true&IncludeItemTypes={types}{}&StartIndex={start}&Limit={size}&Fields={FIELDS}",
             self.uid(),
-            self.raw_id(library_key)
+            self.raw_id(library_key),
+            query_params(query)
         );
         let v = self.json(self.get(&path)).await?;
         let page: ItemsPage = serde_json::from_value(v).map_err(|e| Error::Decode(e.to_string()))?;
         Ok(encheo_plex::Page { total: page.total, items: page.items.iter().map(|i| self.to_item(i)).collect() })
+    }
+
+    /// What a library can be filtered by: its genres, decades and age ratings. Jellyfin answers
+    /// in one go; Emby, where that call may be missing, list by list.
+    pub async fn filter_options(&self, library_key: &str, kind: &str) -> Result<FilterOptions> {
+        let (uid, parent, types) = (self.uid(), self.raw_id(library_key), Self::library_types(kind));
+        let names = |v: &Value| -> Vec<String> {
+            v.as_array().into_iter().flatten().filter_map(|x| x.as_str().or_else(|| x["Name"].as_str())).map(String::from).collect()
+        };
+        let (genres, years, ratings) =
+            match self.json(self.get(&format!("/Items/Filters?UserId={uid}&ParentId={parent}&IncludeItemTypes={types}"))).await {
+                Ok(v) if v.get("Genres").is_some() => {
+                    let years: Vec<u32> = v["Years"].as_array().into_iter().flatten().filter_map(|y| y.as_u64()).map(|y| y as u32).collect();
+                    (names(&v["Genres"]), years, names(&v["OfficialRatings"]))
+                }
+                _ => {
+                    let list = |what: &str| format!("/{what}?UserId={uid}&ParentId={parent}&IncludeItemTypes={types}&Recursive=true");
+                    let genres = self.json(self.get(&list("Genres"))).await?;
+                    let years = self.json(self.get(&list("Years"))).await.unwrap_or_default();
+                    let ratings = self.json(self.get(&list("OfficialRatings"))).await.unwrap_or_default();
+                    let years = names(&years["Items"]).iter().filter_map(|y| y.parse().ok()).collect();
+                    (names(&genres["Items"]), years, names(&ratings["Items"]))
+                }
+            };
+        let filter = |n: String| Filter { key: n.clone(), title: n };
+        let mut decades: Vec<u32> = years.iter().map(|y| y / 10 * 10).collect();
+        decades.sort_unstable_by(|a, b| b.cmp(a));
+        decades.dedup();
+        // Countries: the Items API can't filter by them.
+        Ok(FilterOptions { genres: genres.into_iter().map(filter).collect(), countries: vec![], decades, ratings: ratings.into_iter().map(filter).collect() })
     }
 
     pub async fn recently_added(&self, library_key: &str, size: u32) -> Result<Vec<Item>> {
@@ -593,6 +625,7 @@ impl Server {
             key: id.clone(),
             kind: kind.clone(),
             title: s("Name").unwrap_or_default(),
+            title_sort: s("SortName"),
             year: v["ProductionYear"].as_u64().map(|y| y as u32),
             summary: s("Overview"),
             tagline: v["Taglines"].as_array().and_then(|t| t.first()).and_then(|t| t.as_str()).map(String::from),
@@ -620,6 +653,10 @@ impl Server {
             },
             child_count: v["ChildCount"].as_u64().map(|n| n as u32),
             added_at: None,
+            guids: ["Tmdb", "Tvdb", "Imdb"]
+                .iter()
+                .filter_map(|k| v["ProviderIds"][k].as_str().filter(|id| !id.is_empty()).map(|id| encheo_plex::ExternalId { id: format!("{}://{id}", k.to_ascii_lowercase()) }))
+                .collect(),
             ..Default::default()
         };
         if kind == ItemKind::Album {
@@ -729,6 +766,34 @@ fn parse_lyrics(v: &Value) -> Option<encheo_plex::Lyrics> {
     Some(encheo_plex::Lyrics { lines, synced, credit: None })
 }
 
+/// The sort and filter part of an Items query.
+fn query_params(query: &LibraryQuery) -> String {
+    let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+    let mut p = String::from(match query.sort {
+        Sort::Title => "&SortBy=SortName&SortOrder=Ascending",
+        Sort::Added => "&SortBy=DateCreated,SortName&SortOrder=Descending",
+        Sort::Released => "&SortBy=PremiereDate,ProductionYear,SortName&SortOrder=Descending",
+        Sort::Rating => "&SortBy=CommunityRating,SortName&SortOrder=Descending",
+    });
+    p.push_str(match query.watched {
+        Watched::All => "",
+        Watched::Unwatched => "&Filters=IsUnplayed",
+        Watched::Watched => "&Filters=IsPlayed",
+        Watched::Progress => "&Filters=IsResumable",
+    });
+    if let Some(g) = &query.genre {
+        p.push_str(&format!("&Genres={}", enc(&g.key)));
+    }
+    if let Some(d) = query.decade {
+        let years: Vec<String> = (d..d + 10).map(|y| y.to_string()).collect();
+        p.push_str(&format!("&Years={}", years.join(",")));
+    }
+    if let Some(r) = &query.rating {
+        p.push_str(&format!("&OfficialRatings={}", enc(&r.key)));
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,5 +867,23 @@ mod tests {
         let v = serde_json::json!({"Lyrics":[{"Text":"Plain"}]});
         assert!(!parse_lyrics(&v).unwrap().synced);
         assert!(parse_lyrics(&serde_json::json!({"Lyrics":[]})).is_none());
+    }
+
+    #[test]
+    fn query_params_for_sort_and_filters() {
+        assert_eq!(query_params(&LibraryQuery::default()), "&SortBy=SortName&SortOrder=Ascending");
+        let q = LibraryQuery {
+            sort: Sort::Rating,
+            watched: Watched::Progress,
+            genre: Some(Filter { key: "Sci-Fi & Fantasy".into(), title: "Sci-Fi & Fantasy".into() }),
+            country: None,
+            decade: Some(2010),
+            rating: Some(Filter { key: "PG-13".into(), title: "PG-13".into() }),
+        };
+        assert_eq!(
+            query_params(&q),
+            "&SortBy=CommunityRating,SortName&SortOrder=Descending&Filters=IsResumable&Genres=Sci-Fi+%26+Fantasy\
+             &Years=2010,2011,2012,2013,2014,2015,2016,2017,2018,2019&OfficialRatings=PG-13"
+        );
     }
 }

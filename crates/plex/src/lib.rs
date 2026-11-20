@@ -16,12 +16,13 @@
 //! let servers = plex.servers(&token).await?;
 //! let server = plex.connect(&servers[0]).await?;      // probes connections, local first
 //! for lib in server.libraries().await? {
-//!     let items = server.library_items(&lib.key, 0, 50).await?;
+//!     let items = server.library_items(&lib.key, &Default::default(), 0, 50).await?;
 //! }
 //! # Ok(()) }
 //! ```
 
 mod auth;
+mod discover;
 mod model;
 mod server;
 

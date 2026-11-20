@@ -13,7 +13,10 @@ mod favourites;
 mod images;
 mod langs;
 mod lyrics;
+mod filters;
 mod profiles;
+mod requests;
+mod suggest;
 mod progress;
 mod shares;
 mod player;
@@ -111,6 +114,10 @@ struct State {
     album_tracks: Vec<Item>,
     /// Music libraries: the tab shown (see `MUSIC_TABS`).
     music_tab: i32,
+    /// The movie or TV library in the grid, with its sort and filters.
+    filters: Option<filters::Current>,
+    /// What each library can be filtered by, by library key, once asked.
+    filter_options: HashMap<String, encheo_plex::FilterOptions>,
     /// The Songs tab's songs, in order, for playing on from one of them.
     songs: Vec<Item>,
     /// TV Home: the title the remote rested on last tick, about to fill the billboard.
@@ -372,6 +379,7 @@ fn enter_home() {
     ui.set_screen("home".into());
     ui.set_selected_library(-1);
     ui.set_loading(true);
+    suggest::clear(&ui);
     let generation = with_state(|s| {
         s.generation += 1;
         s.generation
@@ -416,6 +424,8 @@ fn enter_home() {
             with_state(|s| {
                 s.library_keys = libs.iter().map(|(_, l, _)| l.key.clone()).collect();
                 s.library_kinds = libs.iter().map(|(_, l, _)| l.kind.clone()).collect();
+                let server = s.session.server.as_ref().map(|x| x.client_identifier.clone()).unwrap_or_default();
+                suggest::libraries_loaded(&format!("{server}|{}", s.session.profile.clone().unwrap_or_default()), &s.library_keys);
             });
             with_models(|m| {
                 m.libraries.set_vec(
@@ -447,7 +457,10 @@ fn enter_home() {
             let watch: Vec<Item> = watchlist
                 .into_iter()
                 .filter_map(|mut i| {
-                    i.rating_key = format!("watch:{}", i.guid.clone()?);
+                    let guid = i.guid.clone()?;
+                    // Kept as the catalogue title too, for its page when no server has it.
+                    remember([suggest::catalog_id(i.clone())]);
+                    i.rating_key = format!("watch:{guid}");
                     Some(i)
                 })
                 .collect();
@@ -812,6 +825,8 @@ fn select_library(index: i32) {
             .then(|| s.library_keys.get(index as usize).and_then(|k| k.strip_prefix("share:")?.parse::<usize>().ok()))
             .flatten()
     });
+    filters::clear(&ui);
+    suggest::clear(&ui);
     if let Some(si) = share {
         return shares::browse(si, String::new());
     }
@@ -823,6 +838,7 @@ fn select_library(index: i32) {
     let Some(key) = key else { return };
     let Some(server) = backend_for(&key) else { return };
     let kind_str = kind.clone().unwrap_or_default();
+    let query = if filters::applies(&kind_str) { filters::begin(&ui, &key, &kind_str, &server) } else { Default::default() };
     // Music libraries have tabs: artists, albums, songs, playlists.
     let music = kind_str == "artist";
     let tab = if music { with_state(|s| s.music_tab) } else { 0 };
@@ -842,7 +858,7 @@ fn select_library(index: i32) {
             let page = if music {
                 server.music_items(&key, tab, start, PAGE).await
             } else {
-                server.library_items(&key, &kind_str, start, PAGE).await
+                server.library_items(&key, &kind_str, &query, start, PAGE).await
             };
             let done = match &page {
                 Ok(p) => p.items.len() < PAGE as usize || p.total.is_some_and(|t| start + PAGE >= t),
@@ -875,6 +891,7 @@ fn select_library(index: i32) {
                         let posters: Vec<Poster> = p.items.iter().map(|i| poster(i, false)).collect();
                         remember(p.items);
                         with_models(|m| posters.into_iter().for_each(|x| m.grid.push(x)));
+                        filters::update_rail(ui);
                     }
                     Err(e) => toast(ui, format!("Couldn't load the library: {e}")),
                 }
@@ -1196,9 +1213,17 @@ fn reload_page(selected: i32) {
     }
 }
 
-/// A watchlist title: show it from the server if the server has it.
+/// A watchlist title: show it from the server if the server has it, else its catalogue page.
 fn open_watchlist_item(guid: String) {
-    let Some(server) = server() else { return };
+    let catalogue = |guid: &str| {
+        with_state(|s| s.items.values().find(|i| i.rating_key.starts_with("cat:") && i.guid.as_deref() == Some(guid)).cloned())
+    };
+    let Some(server) = server() else {
+        if let Some(item) = catalogue(&guid) {
+            show_detail(item);
+        }
+        return;
+    };
     rt().spawn(async move {
         let found = server.find_by_guid(&guid).await.ok().flatten();
         on_ui(move |ui| match found {
@@ -1206,7 +1231,10 @@ fn open_watchlist_item(guid: String) {
                 remember([item.clone()]);
                 show_detail(item);
             }
-            None => toast(ui, "Not on your server yet."),
+            None => match catalogue(&guid) {
+                Some(item) => show_detail(item),
+                None => toast(ui, "Not on your server yet."),
+            },
         });
     });
 }
@@ -1267,9 +1295,19 @@ fn show_detail(item: Item) {
         s.trailer = None;
     });
     ui.set_detail_can_trailer(false);
+    ui.set_detail_watchlist_mode(false);
     ui.set_screen("detail".into());
     // Where each section starts, for the remote focus (the old page's would be stale).
     detail_rows(&ui);
+    requests::page_opened();
+    // A title only Seerr knows (searched for without Plex): its page comes from there.
+    if item.rating_key.starts_with("seerr:") {
+        return requests::seerr_page(&ui, &item);
+    }
+    // A title from Plex's catalogue, not on any server: its page comes from there.
+    if let Some(key) = item.rating_key.strip_prefix("cat:") {
+        return suggest::catalog_detail(&ui, key.to_string());
+    }
     if matches!(item.kind, ItemKind::Movie | ItemKind::Show) {
         find_trailer(&item.rating_key);
     }
@@ -1516,6 +1554,9 @@ fn fill_detail_text(ui: &AppWindow, item: &Item) {
 }
 
 fn toggle_favourite() {
+    if ui().get_detail_watchlist_mode() {
+        return suggest::toggle_watchlist();
+    }
     let Some(item) = with_state(|s| s.detail.clone()) else { return };
     let p = poster(&item, false);
     let fav = favourites::Favourite {
@@ -1736,6 +1777,10 @@ fn toggle_watched() {
 }
 
 fn play_detail() {
+    // A title that isn't in the library: the main button asks Seerr for it.
+    if requests::is_request_page() {
+        return requests::request();
+    }
     if !play_music_detail(false) {
         let item = with_state(|s| s.next_up.clone().or_else(|| s.detail.clone()));
         if let Some(item) = item {
@@ -2713,6 +2758,7 @@ fn search(query: String) {
     let query = query.trim().to_string();
     if query.is_empty() {
         let ui = ui();
+        suggest::clear(&ui);
         if ui.get_selected_library() == -2 {
             if ui.global::<Theme>().get_tv() {
                 ui.set_grid_title("Search".into());
@@ -2735,6 +2781,7 @@ fn search(query: String) {
         ui.set_grid_title(format!("Results for “{query}”").into());
         ui.set_grid_square(false);
         ui.set_loading(true);
+        suggest::clear(&ui);
         with_state(|s| s.generation += 1);
         rt().spawn(async move {
             let mut found = Vec::new();
@@ -2760,6 +2807,8 @@ fn search(query: String) {
                         let items: Vec<Item> =
                             items.into_iter().filter(|i| !matches!(i.kind, ItemKind::Episode | ItemKind::Season)).collect();
                         let mut posters: Vec<Poster> = items.iter().map(|i| poster(i, false)).collect();
+                        // Then, under them: close titles, the catalogue, and what's like it.
+                        suggest::start(query.clone(), items.clone(), generation);
                         remember(items);
                         let progress = with_state(|s| s.progress.get_or_insert_with(progress::Store::load).clone());
                         posters.extend(files.iter().map(|(item, name)| shares::file_poster(item, name, &progress)));
@@ -2785,6 +2834,7 @@ fn open_tv_search() {
         ui.set_grid_title("Search".into());
         ui.set_loading(false);
         with_models(|m| m.grid.set_vec(Vec::<Poster>::new()));
+        suggest::clear(&ui);
     } else {
         search(text);
     }
@@ -2815,8 +2865,9 @@ fn tv_key(key: &str) {
 fn keys_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
     use slint::platform::Key;
     let is = |k: Key| SharedString::from(k).as_str() == key;
+    // The results, or the suggestions when there are none.
     let to_results = |ui: &AppWindow| {
-        if with_models(|m| m.grid.row_count()) > 0 {
+        if with_models(|m| m.grid.row_count()) > 0 || ui.get_search_rows().row_count() > 0 {
             set_focus(ui, "content", 0, 0);
         }
     };
@@ -3538,6 +3589,13 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
 
     // A library grid or search results.
     let has_tabs = selected >= 0 && ui.get_grid_tabs().row_count() > 0;
+    let has_filters = selected >= 0 && ui.get_filter_chips().row_count() > 0;
+    if zone == "filters" {
+        return filters::bar_nav(ui, col, key, enter, to_side);
+    }
+    if zone == "az" {
+        return filters::rail_nav(ui, row, key, enter);
+    }
     if zone == "tabs" {
         let n = ui.get_grid_tabs().row_count() as i32;
         if enter {
@@ -3552,15 +3610,44 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         return true;
     }
     let ids: Vec<SharedString> = with_models(|m| m.grid.iter().map(|p| p.id).collect());
+    let cols = ui.global::<Nav>().get_grid_cols().max(1);
+    // Search: rows of suggestions under the results, each a line of its own for the remote.
+    let shelves: Vec<Vec<SharedString>> =
+        if selected == -2 { ui.get_search_rows().iter().map(|r| r.items.iter().map(|p| p.id).collect()).collect() } else { vec![] };
+    let grid_rows = if ids.is_empty() { 0 } else { (ids.len() as i32 - 1) / cols + 1 };
+    if row >= grid_rows && !shelves.is_empty() {
+        let r = (row - grid_rows).clamp(0, shelves.len() as i32 - 1);
+        let items = &shelves[r as usize];
+        let c = col.clamp(0, items.len() as i32 - 1);
+        let line = |i: i32| shelves.get(i as usize).map_or(0, |l| l.len() as i32);
+        if enter {
+            open_item(items[c as usize].to_string());
+        } else if is(Key::UpArrow) && r > 0 {
+            set_focus(ui, "content", grid_rows + r - 1, c.min(line(r - 1) - 1));
+        } else if is(Key::UpArrow) && grid_rows > 0 {
+            let i = ((grid_rows - 1) * cols + c.min(cols - 1)).min(ids.len() as i32 - 1);
+            set_focus(ui, "content", i / cols, i % cols);
+        } else if is(Key::DownArrow) && r + 1 < shelves.len() as i32 {
+            set_focus(ui, "content", grid_rows + r + 1, c.min(line(r + 1) - 1));
+        } else if is(Key::DownArrow) {
+            enter_music_bar(ui, "content", row, col);
+        } else if is(Key::LeftArrow) {
+            if c == 0 { to_side(ui) } else { set_focus(ui, "content", row, c - 1) }
+        } else if is(Key::RightArrow) {
+            set_focus(ui, "content", row, (c + 1).min(items.len() as i32 - 1));
+        }
+        return true;
+    }
     if ids.is_empty() {
         if is(Key::LeftArrow) {
             to_side(ui);
         } else if is(Key::UpArrow) && has_tabs {
             set_focus(ui, "tabs", 0, ui.get_grid_tab());
+        } else if is(Key::UpArrow) && has_filters {
+            set_focus(ui, "filters", 0, 0);
         }
         return true;
     }
-    let cols = ui.global::<Nav>().get_grid_cols().max(1);
     let last = ids.len() as i32 - 1;
     let idx = (row * cols + col).clamp(0, last);
     let go = |ui: &AppWindow, i: i32| set_focus(ui, "content", i / cols, i % cols);
@@ -3568,14 +3655,21 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         open_item(ids[idx as usize].to_string());
     } else if is(Key::UpArrow) && idx < cols && has_tabs {
         set_focus(ui, "tabs", 0, ui.get_grid_tab());
+    } else if is(Key::UpArrow) && idx < cols && has_filters {
+        set_focus(ui, "filters", 0, 0);
     } else if is(Key::UpArrow) {
         go(ui, if idx >= cols { idx - cols } else { idx });
+    } else if is(Key::DownArrow) && idx / cols == last / cols && !shelves.is_empty() {
+        // Straight down onto the first row of suggestions.
+        set_focus(ui, "content", grid_rows, (idx % cols).min(shelves[0].len() as i32 - 1).max(0));
     } else if is(Key::DownArrow) && idx / cols == last / cols {
         enter_music_bar(ui, "content", row, col);
     } else if is(Key::DownArrow) {
         go(ui, (idx + cols).min(last));
     } else if is(Key::LeftArrow) {
         if idx % cols == 0 { to_side(ui) } else { go(ui, idx - 1) }
+    } else if is(Key::RightArrow) && (idx % cols == cols - 1 || idx == last) && filters::to_rail(ui, idx) {
+        // Onto the A–Z rail.
     } else if is(Key::RightArrow) {
         go(ui, (idx + 1).min(last));
     }
@@ -3848,7 +3942,7 @@ fn settings_closed() {
 /// Back on Home: windows first (About, the form, Settings with a pending "Remove?" first), then
 /// search results and library pages go back to Home. False when there's nothing to go back to.
 fn go_back() -> bool {
-    if profiles::back() {
+    if profiles::back() || filters::back() {
         return true;
     }
     let ui = ui();
@@ -4432,6 +4526,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.on_open_notices(open_notices);
     ui.on_notices_closed(|| crate::ui().set_notices(ModelRc::default()));
     ui.on_profile_pick(|i| profiles::pick(i.max(0) as usize));
+    ui.on_filter_chip(filters::chip);
+    ui.on_filter_pick(filters::pick);
+    ui.on_filter_sheet_key(|k| filters::sheet_key(&k));
+    ui.on_filter_sheet_close(filters::close_sheet);
     ui.on_pin_key(|k| profiles::pin_key(&k));
     ui.on_profile_key(|k| profiles::key(&k));
     ui.on_profiles_back(|| {
@@ -4449,6 +4547,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);
 
+    requests::load();
     resume_session();
     // Android TV pops the keyboard up as the window gets focus; close it once that has happened.
     for ms in [400, 1500] {

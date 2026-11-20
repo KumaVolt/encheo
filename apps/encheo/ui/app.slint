@@ -53,7 +53,7 @@ export struct FoundSource {
 }
 
 export struct SourceRow {
-    kind: string,      // "plex", "server" (Jellyfin/Emby) or "files"
+    kind: string,      // "plex", "server" (Jellyfin/Emby), "files" or "seerr"
     index: int,        // place in its own list
     title: string,
     label: string,     // "Plex", "Jellyfin", "SMB", …
@@ -114,6 +114,20 @@ export struct ProfileEntry {
     art-url: string,
     locked: bool,      // asks for a PIN
     current: bool,     // the profile in use
+}
+
+// Movie and TV libraries: a chip in the bar above the grid (Sort, Genre, …).
+export struct FilterChip {
+    text: string,
+    active: bool,      // narrows the library down
+    menu: bool,        // opens a list of choices (Clear doesn't)
+}
+
+// A letter on the A–Z rail and the first title it jumps to.
+export struct AzLetter {
+    label: string,
+    index: int,        // grid index (of the next letter's titles when this one has none)
+    present: bool,     // titles start with it
 }
 
 export struct ListEntry {
@@ -322,6 +336,7 @@ component Icon inherits Rectangle {
     if root.name == "trash": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4.5 6.5h15M9.5 6.5V4h5v2.5M6.5 6.5l1 13h9l1-13"; }
     if root.name == "gauge": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M4 16a8 8 0 1 1 16 0M12 16l4.5-5"; }
     if root.name == "info": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke; commands: "M12 3.5a8.5 8.5 0 1 1 0 17a8.5 8.5 0 1 1 0-17zM12 11v5.5M12 7.6v0.4"; }
+    if root.name == "chevron-down": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke + 0.4px; commands: "M6.5 9.5l5.5 5.5 5.5-5.5"; }
     if root.name == "check": Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: root.stroke + 0.6px; commands: "M5 12.5l4.5 4.5L19 7.5"; }
 }
 
@@ -855,6 +870,28 @@ component Chip inherits Rectangle {
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
+component FilterChipView inherits Rectangle {
+    in property <FilterChip> data;
+    in property <bool> focused;
+    callback clicked();
+    height: Theme.tv ? 40px : 32px;
+    width: row.preferred-width + (Theme.tv ? 36px : 28px);
+    border-radius: self.height / 2;
+    border-width: root.focused ? 3px : 0px;
+    border-color: #ffffff;
+    background: root.data.active ? Theme.accent : ta.has-hover || root.focused ? Theme.fill-hover : Theme.fill;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 4px;
+        Text { text: root.data.text; color: root.data.active ? Theme.accent-text : Theme.text; font-size: Theme.tv ? 17px : 14px; font-weight: 600; vertical-alignment: center; }
+        if root.data.menu: VerticalLayout {
+            alignment: center;
+            Icon { name: "chevron-down"; width: Theme.tv ? 18px : 15px; height: self.width; tint: root.data.active ? Theme.accent-text : Theme.secondary; }
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
 component Field inherits VerticalLayout {
     in property <string> label;
     in property <string> placeholder;
@@ -952,6 +989,12 @@ component AddSourceDialog inherits Rectangle {
                 alignment: start;
                 for k in [{ i: 2, t: "WebDAV" }, { i: 4, t: "SFTP" }, { i: 5, t: "FTP" }, { i: 6, t: "NFS" }, { i: 7, t: "DLNA" }]: Chip { text: k.t; active: root.kind == k.i; clicked => { root.kind = k.i; } }
             }
+            // Not media: where to ask for what you don't have.
+            if !root.editing: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Chip { text: "Seerr requests"; active: root.kind == 9; clicked => { root.kind = 9; } }
+            }
             Text {
                 color: Theme.secondary;
                 font-size: 12px;
@@ -964,28 +1007,29 @@ component AddSourceDialog inherits Rectangle {
                     : root.kind == 5 ? "An FTP server, e.g. ftp://nas.local/video (ftps:// for encrypted)."
                     : root.kind == 6 ? "An NFS export, e.g. nfs://nas.local/volume1/video. No sign-in needed."
                     : root.kind == 8 ? "Your Plex account. You'll get a code to enter at plex.tv/link, and your server's libraries appear in the sidebar."
+                    : root.kind == 9 ? "Seerr, Overseerr or Jellyseerr, e.g. https://requests.example.com. Titles you don't have get a Request button. Leave the user name blank to sign in with your Plex account."
                     : "A DLNA/UPnP media server (many NAS boxes and TVs). Pick it from the list above when it shows up.";
             }
             if root.kind != 8: Field {
                 label: root.kind == 0 ? "Folder" : "Address";
                 placeholder: root.kind == 0 ? "/Users/you/Movies" : root.kind == 1 ? "smb://server/share" : root.kind == 2 ? "https://server/path"
                     : root.kind == 3 ? "http://server:8096" : root.kind == 4 ? "sftp://server/path" : root.kind == 5 ? "ftp://server/path"
-                    : root.kind == 6 ? "nfs://server/export" : "http://server:8200/rootDesc.xml";
+                    : root.kind == 6 ? "nfs://server/export" : root.kind == 9 ? "https://requests.example.com" : "http://server:8200/rootDesc.xml";
                 text <=> root.location;
             }
             if root.kind != 0 && root.kind != 6 && root.kind != 7 && root.kind != 8: HorizontalLayout {
                 spacing: 12px;
-                Field { label: "User name"; placeholder: root.kind == 1 ? "guest" : ""; text <=> root.user; }
-                Field { label: "Password"; secret: true; placeholder: root.editing ? "Unchanged" : ""; text <=> root.password; }
+                Field { label: root.kind == 9 ? "User name or email" : "User name"; placeholder: root.kind == 1 ? "guest" : root.kind == 9 ? "Blank: your Plex account" : ""; text <=> root.user; }
+                Field { label: "Password"; secret: true; placeholder: root.editing && root.kind != 9 ? "Unchanged" : ""; text <=> root.password; }
             }
-            if root.kind != 3 && root.kind != 8: Field { label: "Name (optional)"; placeholder: "Shown in the sidebar"; text <=> root.name; }
+            if root.kind != 3 && root.kind != 8 && root.kind != 9: Field { label: "Name (optional)"; placeholder: "Shown in the sidebar"; text <=> root.name; }
             if root.status != "": Text { text: root.status; color: root.busy ? Theme.secondary : #ff8f80; font-size: 13px; wrap: word-wrap; }
             HorizontalLayout {
                 spacing: 10px;
                 alignment: end;
                 Button { text: "Cancel"; clicked => { root.cancel(); } }
                 Button {
-                    text: root.busy ? "Connecting…" : root.kind == 3 || root.kind == 8 ? "Sign In" : root.editing ? "Save" : "Connect";
+                    text: root.busy ? "Connecting…" : root.kind == 3 || root.kind == 8 || root.kind == 9 ? "Sign In" : root.editing ? "Save" : "Connect";
                     primary: true;
                     enabled: !root.busy && (root.location != "" || root.kind == 8);
                     clicked => { root.connect(root.kind, root.name, root.location, root.user, root.password); }
@@ -999,6 +1043,25 @@ component AddSourceDialog inherits Rectangle {
 // row; Remove asks first, in the row itself.
 // Settings: where the media comes from (add, edit, remove, Plex sign-in/out), refresh and About.
 // Kept out of the way so a stray click or remote press can't sign anyone out.
+// Under a Request button: how far the download is, and what's happening.
+component PlayStatus inherits VerticalLayout {
+    in property <float> progress: -1;
+    in property <string> note;
+    spacing: 6px;
+    if root.progress >= 0: Rectangle {
+        height: 4px;
+        border-radius: 2px;
+        background: #ffffff30;
+        Rectangle {
+            x: 0;
+            width: parent.width * Math.max(0, Math.min(1, root.progress));
+            border-radius: 2px;
+            background: Theme.accent;
+        }
+    }
+    if root.note != "": Text { text: root.note; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+}
+
 // A setting that's on or off: title, a line of detail, and a switch.
 component SwitchRow inherits Rectangle {
     in property <string> title;
@@ -1113,7 +1176,7 @@ component SettingsDialog inherits Rectangle {
                             padding-left: 14px;
                             padding-right: 10px;
                             spacing: 12px;
-                            VerticalLayout { alignment: center; Icon { name: row.kind == "files" ? "folder" : "film"; width: 20px; height: 20px; tint: Theme.accent; } }
+                            VerticalLayout { alignment: center; Icon { name: row.kind == "files" ? "folder" : row.kind == "seerr" ? "plus" : "film"; width: 20px; height: 20px; tint: Theme.accent; } }
                             VerticalLayout {
                                 alignment: center;
                                 spacing: 3px;
@@ -1348,7 +1411,11 @@ component Home inherits Rectangle {
     in property <int> tab;
     in property <[Track]> songs;          // the Songs tab, shown as a list
     callback select-tab(int);
-    property <length> tabs-h: root.tabs.length > 0 && root.selected >= 0 ? 52px : 0px;
+    in property <[FilterChip]> filters;   // movie and TV libraries: Sort, Genre, …
+    in property <[AzLetter]> az;          // sorted by title: the A–Z rail
+    in property <[HomeRow]> search-rows;  // search: suggestions under the results
+    callback filter-chip(int);
+    property <length> tabs-h: (root.tabs.length > 0 || root.filters.length > 0) && root.selected >= 0 ? (Theme.tv ? 60px : 52px) : 0px;
     in-out property <string> search-text;
     in property <bool> can-speed-test;
     callback speed-test();
@@ -1531,6 +1598,24 @@ component Home inherits Rectangle {
         }
     }
 
+    // Movie and TV libraries: sort and filters. Scrolls sideways where it doesn't fit (phones).
+    if root.filters.length > 0 && root.selected >= 0: Flickable {
+        x: root.content-x + root.pad;
+        y: root.top + 8px;
+        width: root.content-w - 2 * root.pad;
+        height: Theme.tv ? 44px : 36px;
+        content-width: fbar.preferred-width;
+        fbar := HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            for f[i] in root.filters: FilterChipView {
+                data: f;
+                focused: Nav.active && Nav.zone == "filters" && Nav.col == i;
+                clicked => { root.filter-chip(i); }
+            }
+        }
+    }
+
     if root.selected != -1: gridbox := Rectangle {
         x: root.content-x + root.keyboard-w;
         y: root.top + root.tabs-h;
@@ -1541,14 +1626,37 @@ component Home inherits Rectangle {
         property <length> card-h: self.list ? 46px : root.grid-square ? 214px : 289px;
         property <length> gap: self.list ? 0px : 22px;
         property <length> pad: root.pad;
-        property <int> cols: self.list ? 1 : max(1, floor((self.width - 2 * self.pad + self.gap) / (self.card-w + self.gap)));
+        // Sorted by title: the A–Z rail on the right.
+        property <length> rail-w: root.az.length > 0 && root.selected >= 0 && !self.list ? (Theme.tv ? 44px : 28px) : 0px;
+        property <int> cols: self.list ? 1 : max(1, floor((self.width - 2 * self.pad - self.rail-w + self.gap) / (self.card-w + self.gap)));
+        // Scroll so title `index` is in the top row.
+        function jump(index: int, glide: bool) {
+            if (index < 0) { return; }
+            self.glide = glide;
+            grid-view.content-y = max(min(0px, grid-view.height - grid-view.content-height), -(floor(index / self.cols) * (self.card-h + self.gap)));
+        }
+        // The letter the remote is on, or the mouse or finger is dragging over.
+        property <int> az-row: Nav.active && Nav.zone == "az" ? Nav.row : -1;
+        property <int> scrub: -1;
+        changed az-row => { if (self.az-row >= 0 && self.az-row < root.az.length) { self.jump(root.az[self.az-row].index, true); } }
         init => { Nav.grid-cols = self.cols; }
         changed cols => { Nav.grid-cols = self.cols; }
+        // Search: rows of suggestions follow the grid's rows, for the remote too.
+        property <int> grid-rows: self.list ? root.songs.length : ceil(root.grid.length / self.cols);
+        property <length> grid-h: self.grid-rows * (self.card-h + self.gap);
+        // Scroll a suggestions row (window coordinates) into the middle of the view.
+        function reveal(top: length, height: length) {
+            self.glide = true;
+            let in-content = top - grid-view.absolute-position.y - grid-view.content-y;
+            let view-h = grid-view.height - root.bottom-inset;
+            let target = -(in-content - Math.max(0px, (view-h - height) / 2));
+            grid-view.content-y = Math.max(Math.min(0px, grid-view.height - grid-view.content-height), Math.min(0px, target));
+        }
         // Keep the focused card's row in view.
         property <int> focus-row: root.nav-content ? Nav.row : -1;
         property <bool> glide;
         changed focus-row => {
-            if (self.focus-row >= 0) {
+            if (self.focus-row >= 0 && self.focus-row < self.grid-rows) {
                 self.glide = true;
                 if (12px + self.focus-row * (self.card-h + self.gap) < -grid-view.content-y) {
                     grid-view.content-y = -(self.focus-row * (self.card-h + self.gap));
@@ -1558,7 +1666,7 @@ component Home inherits Rectangle {
             }
         }
         grid-view := Flickable {
-            content-height: ceil(root.grid.length / gridbox.cols) * (gridbox.card-h + gridbox.gap) + gridbox.pad + root.bottom-inset;
+            content-height: gridbox.grid-h + (root.search-rows.length > 0 ? srows.preferred-height + 24px : 0px) + gridbox.pad + root.bottom-inset;
             animate content-y { duration: gridbox.glide ? Theme.glide : 0ms; easing: ease-in-out; }
             flicked => { gridbox.glide = false; }
             if !gridbox.list: Rectangle {
@@ -1569,6 +1677,24 @@ component Home inherits Rectangle {
                     data: p;
                     focused: root.nav-content && Nav.row * gridbox.cols + Nav.col == i;
                     clicked => { root.open(p.id); }
+                }
+            }
+            srows := VerticalLayout {
+                x: gridbox.pad - 12px;
+                y: 12px + gridbox.grid-h + (root.grid.length > 0 ? 12px : 0px);
+                width: gridbox.width - self.x;
+                height: self.preferred-height;
+                alignment: start;
+                spacing: 18px;
+                for row[ri] in root.search-rows: Shelf {
+                    title: row.title;
+                    items: row.items;
+                    landscape: row.landscape;
+                    square: row.square;
+                    screen-h: grid-view.height;
+                    focused-index: root.nav-content && Nav.row == gridbox.grid-rows + ri ? Nav.col : -1;
+                    reveal(t, h) => { gridbox.reveal(t, h); }
+                    open(id) => { root.open(id); }
                 }
             }
             if gridbox.list: Rectangle {
@@ -1582,10 +1708,64 @@ component Home inherits Rectangle {
                 }
             }
         }
-        if root.selected == -2 && root.grid.length == 0 && !root.loading: Text {
+        if root.selected == -2 && root.grid.length == 0 && root.search-rows.length == 0 && !root.loading: Text {
             text: root.search-text == "" ? "Pick letters to search" : "No results";
             color: Theme.secondary;
             font-size: 15px;
+        }
+        if root.selected >= 0 && root.filters.length > 0 && root.grid.length == 0 && !root.loading: Text {
+            text: "Nothing matches these filters";
+            color: Theme.secondary;
+            font-size: Theme.tv ? 20px : 15px;
+        }
+        if gridbox.rail-w > 0: rail := Rectangle {
+            x: gridbox.width - gridbox.rail-w - (Theme.tv ? 12px : 4px);
+            y: 8px;
+            width: gridbox.rail-w;
+            height: gridbox.height - 16px - root.bottom-inset;
+            property <length> step: min(Theme.tv ? 30px : 21px, self.height / root.az.length);
+            property <length> top-y: (self.height - self.step * root.az.length) / 2;
+            for l[i] in root.az: Rectangle {
+                y: rail.top-y + i * rail.step;
+                height: rail.step;
+                property <bool> on: gridbox.az-row == i || gridbox.scrub == i;
+                Rectangle {
+                    width: min(rail.step, rail.width) - 2px;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: parent.on ? Theme.accent : transparent;
+                }
+                Text {
+                    text: l.label;
+                    color: parent.on ? Theme.accent-text : l.present ? Theme.secondary : Theme.tertiary;
+                    opacity: l.present || parent.on ? 1 : 0.5;
+                    font-size: Theme.tv ? 15px : 11px;
+                    font-weight: 700;
+                }
+            }
+            // Click a letter, or drag along the rail to scrub through the library.
+            TouchArea {
+                mouse-cursor: pointer;
+                property <int> at: max(0, min(root.az.length - 1, floor((self.mouse-y - rail.top-y) / rail.step)));
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) { gridbox.scrub = self.at; gridbox.jump(root.az[self.at].index, false); }
+                    if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) { gridbox.scrub = -1; }
+                }
+                moved => {
+                    if (self.pressed && self.at != gridbox.scrub) { gridbox.scrub = self.at; gridbox.jump(root.az[self.at].index, false); }
+                }
+            }
+        }
+        // The letter, large, while scrubbing or on the rail with the remote.
+        if gridbox.rail-w > 0 && (gridbox.scrub >= 0 || gridbox.az-row >= 0): Rectangle {
+            property <int> l: gridbox.scrub >= 0 ? gridbox.scrub : gridbox.az-row;
+            width: Theme.tv ? 120px : 88px;
+            height: self.width;
+            x: (gridbox.width - gridbox.rail-w - self.width) / 2;
+            y: (gridbox.height - root.bottom-inset - self.height) / 2;
+            border-radius: 20px;
+            background: #000000b0;
+            Text { text: parent.l >= 0 && parent.l < root.az.length ? root.az[parent.l].label : ""; color: white; font-size: Theme.tv ? 64px : 48px; font-weight: 700; }
         }
     }
 
@@ -1752,6 +1932,12 @@ component Detail inherits Rectangle {
     in property <string> tech;              // footer: codecs, size, bitrate
     in property <string> file-name;
     in property <string> play-label;
+    // A title that isn't in the library: the main button is Seerr's Request, with its state.
+    // play-progress is how far the download is (0 to 1; below 0, no bar); play-note a line under it.
+    in property <string> play-icon: "play";
+    in property <bool> play-enabled: true;
+    in property <float> play-progress: -1;
+    in property <string> play-note;
     in property <bool> can-restart;
     in property <bool> can-trailer;
     in property <bool> can-shuffle;          // albums and artists
@@ -1759,6 +1945,8 @@ component Detail inherits Rectangle {
     in property <bool> can-mark-watched;
     in property <bool> can-favourite;
     in property <bool> favourite;
+    // A catalogue title: the heart is the watchlist (+, then a tick).
+    in property <bool> watchlist-mode;
     in property <bool> is-show;
     in property <[string]> seasons;
     in property <[bool]> seasons-watched;   // every episode of that season seen
@@ -1860,10 +2048,10 @@ component Detail inherits Rectangle {
                                 if root.can-favourite: VerticalLayout {
                                     alignment: center;
                                     RoundAction {
-                                        icon: "heart";
+                                        icon: root.watchlist-mode ? (root.favourite ? "check" : "plus") : "heart";
                                         active: root.favourite;
                                         focused: root.action-focused(root.favourite-col);
-                                        tip: root.favourite ? "Remove from Favourites" : "Add to Favourites";
+                                        tip: root.watchlist-mode ? (root.favourite ? "Remove from Watchlist" : "Add to Watchlist") : root.favourite ? "Remove from Favourites" : "Add to Favourites";
                                         clicked => { root.toggle-favourite(); }
                                     }
                                 }
@@ -1876,7 +2064,7 @@ component Detail inherits Rectangle {
                         alignment: start;
                         if root.play-label != "": Pill { text: root.play-label; icon: "play"; light: true; clicked => { root.play(); } }
                         if root.can-shuffle: Pill { text: "Shuffle"; icon: "shuffle"; clicked => { root.shuffle(); } }
-                        if root.can-favourite: VerticalLayout { alignment: center; RoundAction { icon: "heart"; active: root.favourite; clicked => { root.toggle-favourite(); } } }
+                        if root.can-favourite: VerticalLayout { alignment: center; RoundAction { icon: root.watchlist-mode ? (root.favourite ? "check" : "plus") : "heart"; active: root.favourite; clicked => { root.toggle-favourite(); } } }
                     }
                 }
             }
@@ -1911,17 +2099,18 @@ component Detail inherits Rectangle {
                     if root.play-label != "": Rectangle {
                         height: 52px;
                         border-radius: 26px;
-                        background: pta.has-hover || root.action-focused(root.play-col) ? #ffffffe8 : #ffffffd6;
+                        background: !root.play-enabled ? #ffffff30 : pta.has-hover || root.action-focused(root.play-col) ? #ffffffe8 : #ffffffd6;
                         border-width: root.action-focused(root.play-col) ? 3px : 0px;
                         border-color: Theme.accent;
                         HorizontalLayout {
                             alignment: center;
                             spacing: 10px;
-                            VerticalLayout { alignment: center; Icon { name: "play"; width: 16px; height: 16px; tint: #111; } }
-                            Text { text: root.play-label; color: #111; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+                            VerticalLayout { alignment: center; Icon { name: root.play-icon; width: 16px; height: 16px; tint: root.play-enabled ? #111 : white; } }
+                            Text { text: root.play-label; color: root.play-enabled ? #111 : white; font-size: 16px; font-weight: 700; vertical-alignment: center; }
                         }
-                        pta := TouchArea { mouse-cursor: pointer; clicked => { root.play(); } }
+                        pta := TouchArea { mouse-cursor: root.play-enabled ? pointer : default; clicked => { root.play(); } }
                     }
+                    if root.play-progress >= 0 || root.play-note != "": PlayStatus { progress: root.play-progress; note: root.play-note; }
                     HorizontalLayout {
                         spacing: 14px;
                         alignment: start;
@@ -1938,10 +2127,10 @@ component Detail inherits Rectangle {
                             clicked => { root.toggle-watched(); }
                         }
                         if root.can-favourite: RoundAction {
-                            icon: "heart";
+                            icon: root.watchlist-mode ? (root.favourite ? "check" : "plus") : "heart";
                             active: root.favourite;
                             focused: root.action-focused(root.favourite-col);
-                            tip: root.favourite ? "Remove from Favourites" : "Add to Favourites";
+                            tip: root.watchlist-mode ? (root.favourite ? "Remove from Watchlist" : "Add to Watchlist") : root.favourite ? "Remove from Favourites" : "Add to Favourites";
                             clicked => { root.toggle-favourite(); }
                         }
                     }
@@ -1958,21 +2147,22 @@ component Detail inherits Rectangle {
                             horizontal-stretch: 1;
                             height: 46px;
                             border-radius: 23px;
-                            background: cpta.has-hover ? #ffffffe8 : #ffffffd6;
+                            background: !root.play-enabled ? #ffffff30 : cpta.has-hover ? #ffffffe8 : #ffffffd6;
                             border-width: root.action-focused(root.play-col) ? 3px : 0px;
                             border-color: Theme.accent;
                             HorizontalLayout {
                                 alignment: center;
                                 spacing: 10px;
-                                VerticalLayout { alignment: center; Icon { name: "play"; width: 14px; height: 14px; tint: #111; } }
-                                Text { text: root.play-label; color: #111; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                                VerticalLayout { alignment: center; Icon { name: root.play-icon; width: 14px; height: 14px; tint: root.play-enabled ? #111 : white; } }
+                                Text { text: root.play-label; color: root.play-enabled ? #111 : white; font-size: 15px; font-weight: 700; vertical-alignment: center; }
                             }
                             cpta := TouchArea { clicked => { root.play(); } }
                         }
                         if root.can-restart: RoundAction { icon: "restart"; clicked => { root.play-from-start(); } }
                         if root.can-mark-watched: RoundAction { icon: "eye"; active: root.watched; clicked => { root.toggle-watched(); } }
-                        if root.can-favourite: RoundAction { icon: "heart"; active: root.favourite; clicked => { root.toggle-favourite(); } }
+                        if root.can-favourite: RoundAction { icon: root.watchlist-mode ? (root.favourite ? "check" : "plus") : "heart"; active: root.favourite; clicked => { root.toggle-favourite(); } }
                     }
+                    if root.compact && (root.play-progress >= 0 || root.play-note != ""): PlayStatus { progress: root.play-progress; note: root.play-note; }
                     // Spelled out: an icon alone doesn't say "trailer".
                     if root.compact && root.can-trailer: HorizontalLayout {
                         alignment: start;
@@ -3214,6 +3404,21 @@ export component AppWindow inherits Window {
     in property <bool> direct-on;
     callback direct-toggled();
     // Plex Home profiles (profiles.rs): the people, the picker, and the PIN pad.
+    // Movie and TV libraries: the bar of sort and filter chips, the A–Z rail, and the panel of
+    // choices a chip opens (filter-sheet: the chip's index, -1 closed).
+    in property <[FilterChip]> filter-chips;
+    in property <[AzLetter]> az;
+    // Search: "Did you mean", "Not in your library" and "In your library, like …" rows.
+    in property <[HomeRow]> search-rows;
+    in property <int> filter-sheet: -1;
+    in property <string> filter-sheet-title;
+    in property <[string]> filter-sheet-options;
+    in property <int> filter-sheet-current;
+    in-out property <int> filter-sheet-focus;
+    callback filter-chip(int);
+    callback filter-pick(int);
+    callback filter-sheet-key(string);
+    callback filter-sheet-close();
     in property <[ProfileEntry]> profiles;
     in property <bool> can-switch-profile;
     in-out property <bool> profiles-open;
@@ -3309,6 +3514,11 @@ export component AppWindow inherits Window {
     in property <string> detail-file;
     in property <bool> detail-can-restart;
     in property <bool> detail-can-trailer;
+    in property <string> detail-play-icon: "play";
+    in property <bool> detail-play-enabled: true;
+    in property <float> detail-play-progress: -1;
+    in property <string> detail-play-note;
+    in property <bool> detail-watchlist-mode;
     in property <bool> detail-watched;
     in property <bool> detail-can-mark-watched;
     in property <bool> detail-can-favourite;
@@ -3372,6 +3582,7 @@ export component AppWindow inherits Window {
     keys := FocusScope {
         key-pressed(e) => {
             if (root.profiles-open) { root.profile-key(e.text); return accept; }
+            if (root.filter-sheet >= 0) { root.filter-sheet-key(e.text); return accept; }
             if (root.notices-open) { root.notices-key(e.text); return accept; }
             if (e.text == Key.Back && root.screen == "home" && Nav.back()) { return accept; }
             // Back on the music bar leaves the bar, not the page under it.
@@ -3438,6 +3649,10 @@ export component AppWindow inherits Window {
         tab: root.grid-tab;
         songs: root.songs;
         select-tab(i) => { root.select-tab(i); }
+        filters: root.filter-chips;
+        az: root.az;
+        search-rows: root.search-rows;
+        filter-chip(i) => { root.filter-chip(i); }
         loading: root.loading;
         search-text <=> root.search-text;
         bottom-inset: root.music-active ? 96px : 0px;
@@ -3457,6 +3672,10 @@ export component AppWindow inherits Window {
         summary: root.detail-summary;
         tech: root.detail-tech;
         play-label: root.play-label;
+        play-icon: root.detail-play-icon;
+        play-enabled: root.detail-play-enabled;
+        play-progress: root.detail-play-progress;
+        play-note: root.detail-play-note;
         is-show: root.detail-is-show;
         seasons: root.seasons;
         seasons-watched: root.seasons-watched;
@@ -3479,6 +3698,7 @@ export component AppWindow inherits Window {
         bottom-inset: root.music-active ? 96px : 0px;
         play-from-start => { root.play-from-start(); }
         can-trailer: root.detail-can-trailer;
+        watchlist-mode: root.detail-watchlist-mode;
         play-trailer => { root.play-trailer(); }
         can-shuffle: root.detail-can-shuffle;
         shuffle => { root.shuffle-detail(); }
@@ -3594,6 +3814,82 @@ export component AppWindow inherits Window {
         scanning: root.scanning;
         connect(k, n, l, u, p) => { root.add-source(k, n, l, u, p); }
         cancel => { root.add-source-open = false; }
+    }
+
+    // A filter chip's choices, in a panel on the right.
+    if root.filter-sheet >= 0: Rectangle {
+        y: root.inset-top;
+        height: root.height - root.inset-top - root.inset-bottom;
+        background: #00000080;
+        TouchArea { clicked => { root.filter-sheet-close(); } }
+        sheet := Rectangle {
+            property <length> row-h: Theme.tv ? 58px : 44px;
+            property <length> head: Theme.tv ? 96px : 72px;
+            width: min(parent.width, Theme.tv ? 480px : 340px);
+            x: parent.width - self.width;
+            background: Theme.bg;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000060;
+            TouchArea { }
+            Text {
+                x: Theme.tv ? 32px : 20px;
+                y: 0;
+                height: sheet.head;
+                text: root.filter-sheet-title;
+                color: Theme.text;
+                font-size: Theme.tv ? 28px : 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            list := Flickable {
+                y: sheet.head;
+                height: sheet.height - sheet.head - 12px;
+                content-height: root.filter-sheet-options.length * sheet.row-h;
+                property <int> at: root.filter-sheet-focus;
+                // Keep the remote's row in view.
+                changed at => {
+                    if (self.at * sheet.row-h < -self.content-y) {
+                        self.content-y = -(self.at * sheet.row-h);
+                    } else if ((self.at + 1) * sheet.row-h > -self.content-y + self.height) {
+                        self.content-y = -((self.at + 1) * sheet.row-h - self.height);
+                    }
+                }
+                init => {
+                    // Open on the current choice.
+                    self.content-y = max(min(0px, self.height - self.content-height), -(self.at * sheet.row-h - self.height / 2 + sheet.row-h / 2));
+                }
+                for o[i] in root.filter-sheet-options: Rectangle {
+                    y: i * sheet.row-h;
+                    x: Theme.tv ? 16px : 8px;
+                    width: sheet.width - 2 * self.x;
+                    height: sheet.row-h - 4px;
+                    border-radius: 10px;
+                    property <bool> focused: i == root.filter-sheet-focus && Nav.active;
+                    background: self.focused || ota.has-hover ? Theme.fill-hover : transparent;
+                    border-width: self.focused ? 3px : 0px;
+                    border-color: #ffffff;
+                    HorizontalLayout {
+                        padding-left: Theme.tv ? 16px : 12px;
+                        padding-right: Theme.tv ? 16px : 12px;
+                        spacing: 10px;
+                        Text {
+                            text: o;
+                            color: i == root.filter-sheet-current ? Theme.accent : Theme.text;
+                            font-size: Theme.tv ? 19px : 15px;
+                            font-weight: i == root.filter-sheet-current ? 700 : 500;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if i == root.filter-sheet-current: VerticalLayout {
+                            alignment: center;
+                            Icon { name: "check"; width: Theme.tv ? 22px : 18px; height: self.width; tint: Theme.accent; }
+                        }
+                    }
+                    ota := TouchArea { mouse-cursor: pointer; clicked => { root.filter-pick(i); } }
+                }
+            }
+        }
     }
 
     // "Who's watching?": over everything, until someone is chosen (Back keeps the one in use).

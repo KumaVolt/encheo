@@ -39,6 +39,8 @@ macOS and Android** (phones and Android TV included), and where Encheo stands.
 | Up Next, watched state, resume points | ✓ | Servers keep their own; files tracked locally |
 | Extras (trailers, featurettes) | ◐ | Trailers from the server, else YouTube (AniList for anime), played in the app. Featurettes (→) |
 | Search | ✓ | Media servers and file sources (file lists collected on the first search) |
+| Library sort, filters, A–Z jump | ✓ | Movies and TV: sort by title, added, release, rating; filter by watched state, genre, country (Plex), decade, age rating; kept per library. A–Z rail when sorted by title (click, drag or remote) |
+| Requests (Seerr, Overseerr, Jellyseerr) | ✓ | Request button on titles you don't have (Plex catalogue pages; Seerr's own search without Plex), seasons for shows, state and download progress refreshed while the page is open. Not yet: 4K requests, a list of your requests |
 | Downloads for offline playback | → | Matters most on Android phones |
 
 ## Playback

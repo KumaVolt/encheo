@@ -106,11 +106,15 @@ pub enum MediaKind {
 /// What the player recognises, by extension.
 pub fn media_kind(name: &str) -> Option<MediaKind> {
     let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    // .strm: a text file holding the address of a stream (see `strm_target`).
     const VIDEO: &[&str] = &[
-        "mkv", "mp4", "m4v", "mov", "avi", "wmv", "asf", "flv", "webm", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "ogm",
-        "ogv", "rmvb", "3gp", "divx", "iso",
+        "mkv", "mk3d", "mp4", "m4v", "mov", "avi", "wmv", "asf", "flv", "webm", "ts", "m2ts", "mts", "m2t", "mpg", "mpeg",
+        "m2v", "vob", "ogm", "ogv", "rm", "rmvb", "3gp", "3g2", "divx", "xvid", "mxf", "wtv", "dvr-ms", "f4v", "iso", "strm",
     ];
-    const AUDIO: &[&str] = &["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "alac", "wma", "aiff", "ape", "dsf"];
+    const AUDIO: &[&str] = &[
+        "mp3", "flac", "m4a", "m4b", "aac", "ogg", "oga", "opus", "wav", "alac", "wma", "aiff", "aif", "ape", "dsf", "dff",
+        "mka", "ac3", "eac3", "dts", "thd", "truehd", "mlp", "tta", "wv", "mpc",
+    ];
     if VIDEO.contains(&ext.as_str()) {
         Some(MediaKind::Video)
     } else if AUDIO.contains(&ext.as_str()) {
@@ -118,6 +122,20 @@ pub fn media_kind(name: &str) -> Option<MediaKind> {
     } else {
         None
     }
+}
+
+/// The stream a `.strm` file points at: its first line that is an address, and only addresses
+/// of streams (http, https, rtsp, rtmp), never a file on this device or a script.
+pub fn strm_target(text: &str) -> Option<String> {
+    let line = text.trim_start_matches('\u{feff}').lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))?;
+    let scheme = line.split_once("://")?.0.to_ascii_lowercase();
+    let ok = ["http", "https", "rtsp", "rtsps", "rtmp", "rtmps"].contains(&scheme.as_str());
+    (ok && !line.chars().any(char::is_control)).then(|| line.to_string())
+}
+
+/// Whether `name` is a `.strm` file.
+pub fn is_strm(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("strm"))
 }
 
 /// A URL mpv can open itself, with request headers (credentials) if it needs any.
@@ -268,6 +286,23 @@ mod tests {
         assert_eq!(media_kind("01 - Song.flac"), Some(MediaKind::Audio));
         assert_eq!(media_kind("cover.jpg"), None);
         assert_eq!(media_kind("README"), None);
+        assert_eq!(media_kind("Recording.dvr-ms"), Some(MediaKind::Video));
+        assert_eq!(media_kind("Show.S01E01.strm"), Some(MediaKind::Video));
+        assert_eq!(media_kind("Concert.MKA"), Some(MediaKind::Audio));
+        assert_eq!(media_kind("Album.thd"), Some(MediaKind::Audio));
+    }
+
+    #[test]
+    fn strm_files_point_at_streams_only() {
+        assert_eq!(strm_target("https://cdn.example.com/a.m3u8\n").as_deref(), Some("https://cdn.example.com/a.m3u8"));
+        assert_eq!(strm_target("\u{feff}\n# comment\n  http://nas:8096/v.mkv  ").as_deref(), Some("http://nas:8096/v.mkv"));
+        assert_eq!(strm_target("rtsp://cam/live").as_deref(), Some("rtsp://cam/live"));
+        assert_eq!(strm_target("file:///etc/passwd"), None);
+        assert_eq!(strm_target("/Volumes/Movies/a.mkv"), None);
+        assert_eq!(strm_target("ytdl://something"), None);
+        assert_eq!(strm_target(""), None);
+        assert!(is_strm("Movie (2020).STRM"));
+        assert!(!is_strm("Movie.mkv"));
     }
 
     #[test]

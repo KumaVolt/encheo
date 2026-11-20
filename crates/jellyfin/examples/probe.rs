@@ -10,7 +10,7 @@ async fn main() {
     let s = Server::new(login, client, "jf0:");
     let libs = s.libraries().await.expect("libraries");
     for l in &libs {
-        let page = s.library_items(&l.key, &l.kind, 0, 50).await.expect("items");
+        let page = s.library_items(&l.key, &l.kind, &Default::default(), 0, 50).await.expect("items");
         println!("library {} ({}): {} items", l.title, l.kind, page.items.len());
         for i in &page.items {
             println!("  {:?} {} ({:?}) thumb={}", i.kind, i.title, i.year, i.thumb.is_some());

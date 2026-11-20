@@ -97,7 +97,7 @@ fn episode_marker(word: &str) -> Option<(u32, u32)> {
 /// Read a file name (with or without extension).
 pub fn parse(file_name: &str) -> Parsed {
     let stem = match file_name.rsplit_once('.') {
-        Some((stem, ext)) if ext.len() <= 4 && !ext.contains(' ') && crate::media_kind(file_name).is_some() => stem,
+        Some((stem, ext)) if ext.len() <= 6 && !ext.contains(' ') && crate::media_kind(file_name).is_some() => stem,
         _ => file_name,
     };
     // Drop bracketed group tags at the start: "[SubsPlease] Show - 01 (1080p)".

@@ -43,6 +43,26 @@ pub struct Session {
     pub profile: Option<String>,
     #[serde(default)]
     pub prefs: Prefs,
+    /// Movie and TV libraries: the sort and filters chosen, by library (see `filters`).
+    #[serde(default)]
+    pub library_filters: std::collections::BTreeMap<String, encheo_plex::LibraryQuery>,
+    /// Seerr, for requesting what isn't in the library (see `requests`).
+    #[serde(default)]
+    pub seerr: Option<SavedSeerr>,
+}
+
+/// A Seerr sign-in.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SavedSeerr {
+    pub address: String,
+    /// Seerr's session cookie: as secret as a password. Lasts 30 days unless used.
+    pub session: String,
+    /// Seerr's name for the user.
+    pub user_name: String,
+    /// What was typed to sign in; empty when the Plex account was used (which renews the
+    /// session by itself).
+    #[serde(default)]
+    pub login: String,
 }
 
 /// Player preferences that carry over between files.

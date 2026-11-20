@@ -262,6 +262,92 @@ pub struct Row {
     pub more: Option<String>,
 }
 
+/// How a library is sorted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sort {
+    #[default]
+    Title,
+    /// Recently added first.
+    Added,
+    /// Newest release first.
+    Released,
+    /// Highest audience rating first.
+    Rating,
+}
+
+/// Which titles a library shows by watched state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Watched {
+    #[default]
+    All,
+    Unwatched,
+    Watched,
+    /// Started but not finished (movies).
+    Progress,
+}
+
+/// One value to filter by: what the server takes (`key`) and what the user sees (`title`).
+/// Plex: a genre's id, an age rating as Plex encodes it. Jellyfin and Emby: the name for both.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct Filter {
+    pub key: String,
+    pub title: String,
+}
+
+/// The sort and filters for a library's grid.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct LibraryQuery {
+    #[serde(default)]
+    pub sort: Sort,
+    #[serde(default)]
+    pub watched: Watched,
+    #[serde(default)]
+    pub genre: Option<Filter>,
+    /// Country of origin (with a genre: Korean drama, Japanese animation).
+    #[serde(default)]
+    pub country: Option<Filter>,
+    /// The decade's first year: 1990 for the 1990s.
+    #[serde(default)]
+    pub decade: Option<u32>,
+    /// Age rating (PG-13, 16+).
+    #[serde(default)]
+    pub rating: Option<Filter>,
+}
+
+impl LibraryQuery {
+    /// Narrowed down by anything (the sort doesn't count).
+    pub fn filtered(&self) -> bool {
+        self.watched != Watched::All || self.genre.is_some() || self.country.is_some() || self.decade.is_some() || self.rating.is_some()
+    }
+}
+
+/// What a library can be filtered by: its genres, countries, decades (newest first) and age
+/// ratings. Empty where the server can't filter by it (Jellyfin and Emby: countries).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilterOptions {
+    pub genres: Vec<Filter>,
+    pub countries: Vec<Filter>,
+    pub decades: Vec<u32>,
+    pub ratings: Vec<Filter>,
+}
+
+/// Plex's lists of filter values (`/library/sections/{key}/genre` and the like).
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct FilterValues {
+    #[serde(default, rename = "Directory")]
+    pub directory: Vec<FilterValue>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct FilterValue {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub title: String,
+}
+
 /// A page of a library or list.
 #[derive(Clone, Debug)]
 pub struct Page {
@@ -290,6 +376,12 @@ pub enum ItemKind {
     Other,
 }
 
+/// An id in another database, as `scheme://id`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct ExternalId {
+    pub id: String,
+}
+
 /// A movie, show, season or episode.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -300,9 +392,16 @@ pub struct Item {
     /// Plex's global id, e.g. `plex://movie/5d77…`; the same on every server.
     #[serde(default)]
     pub guid: Option<String>,
+    /// Other databases' ids for the title (`tmdb://438631`, `tvdb://…`, `imdb://tt…`). The
+    /// catalogue sends them; Jellyfin's provider ids are put here too.
+    #[serde(default, rename = "Guid")]
+    pub guids: Vec<ExternalId>,
     #[serde(rename = "type", default)]
     pub kind: ItemKind,
     pub title: String,
+    /// What the title sorts by, when it differs ("Matrix" for "The Matrix"; Jellyfin: always).
+    #[serde(default)]
+    pub title_sort: Option<String>,
     #[serde(default)]
     pub year: Option<u32>,
     #[serde(default)]
@@ -398,6 +497,11 @@ pub struct Item {
 }
 
 impl Item {
+    /// The title's id in another database: `external_id("tmdb")` → `Some("438631")`.
+    pub fn external_id(&self, scheme: &str) -> Option<&str> {
+        self.guids.iter().find_map(|g| g.id.strip_prefix(scheme)?.strip_prefix("://")).filter(|id| !id.is_empty())
+    }
+
     pub fn is_watched(&self) -> bool {
         match self.kind {
             ItemKind::Show | ItemKind::Season => {

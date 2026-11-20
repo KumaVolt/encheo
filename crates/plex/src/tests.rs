@@ -315,3 +315,16 @@ fn lyrics_synced_and_plain() {
     assert!(!l.synced);
     assert_eq!(l.lines[0], LyricLine { start: 0.0, text: "Just words".into() });
 }
+
+#[test]
+fn external_ids() {
+    let item: Item = serde_json::from_value(serde_json::json!({
+        "ratingKey": "5eb8", "type": "movie", "title": "Dune: Part Two",
+        "Guid": [{"id": "imdb://tt15239678"}, {"id": "tmdb://693134"}, {"id": "tvdb://"}]
+    }))
+    .unwrap();
+    assert_eq!(item.external_id("tmdb"), Some("693134"));
+    assert_eq!(item.external_id("imdb"), Some("tt15239678"));
+    assert_eq!(item.external_id("tvdb"), None);
+    assert_eq!(item.external_id("tm"), None);
+}

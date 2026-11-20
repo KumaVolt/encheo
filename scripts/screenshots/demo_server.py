@@ -3,20 +3,25 @@
     python3 demo_server.py <port> <artwork folder>
 
 Answers the endpoints the app uses with Plex-shaped JSON; artwork comes from make_art.py's
-folder. There are no media files: films, episodes and trailers all play Big Buck Bunny
+folder. Libraries sort and filter like Plex's (genre, country, decade, age rating, watched). Set
+DEMO_EXTRA_FILMS=150 to pad Movies with made-up titles (reusing the posters), for trying the
+A–Z rail on a library that scrolls; the screenshots don't use it. There are no media files: films, episodes and trailers all play Big Buck Bunny
 (Blender Foundation, CC BY 3.0), streamed from the Internet Archive's copy. Songs play a
 generated tone.
 """
 
+import copy
 import io
 import json
 import math
+import os
+import random
 import struct
 import sys
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import library
 
@@ -40,6 +45,98 @@ def sort_title(item):
         if t.startswith(article):
             return t[len(article):]
     return t
+
+
+COUNTRIES = ["United States of America", "United Kingdom", "Japan", "Republic of Korea", "France", "Spain"]
+
+
+def pad_films(n):
+    """DEMO_EXTRA_FILMS: n made-up films across the alphabet, with the real films' posters."""
+    rng = random.Random(7)
+    first = ["Silent", "Broken", "Golden", "Hidden", "Last", "Midnight", "Northern", "Paper", "Quiet", "Red",
+             "Iron", "Electric", "Distant", "Velvet", "Wild", "Young", "Zero", "Ultra", "Xeno", "Jade", "Echo",
+             "Bright", "Frozen", "Lucky", "Orbit", "Hollow", "The Long", "A Small", "8", "1000", "Élan", "Yellow"]
+    second = ["River", "Signal", "Harbour", "Garden", "Machine", "Summer", "Letters", "Kingdom", "Station",
+              "Engine", "Promise", "Theory", "Window", "Voyage", "Empire", "Season", "Mirror"]
+    films = [library.ITEMS[k] for k in library.SECTION_ITEMS["1"]]
+    genres = sorted({g["tag"] for f in films for g in f.get("Genre", [])})
+    seen = {f["title"] for f in films}
+    for i in range(n):
+        title = f"{rng.choice(first)} {rng.choice(second)}"
+        if title in seen:
+            continue
+        seen.add(title)
+        item = copy.deepcopy(films[i % len(films)])
+        key = str(90_000 + i)
+        item.update({
+            "ratingKey": key, "key": f"/library/metadata/{key}", "guid": f"demo://movie/{key}", "title": title,
+            "year": rng.randint(1962, 2026), "audienceRating": round(rng.uniform(4, 9.8), 1),
+            "addedAt": item["addedAt"] - rng.randint(1, 900) * 86_400,
+            "Genre": [{"tag": g} for g in rng.sample(genres, 2)],
+            "contentRating": rng.choice(["G", "PG", "PG-13", "R", "NR"]),
+        })
+        item.pop("viewOffset", None)
+        item["viewCount"] = 1 if rng.random() < 0.2 else 0
+        library.ITEMS[key] = item
+        library.SECTION_ITEMS["1"].append(key)
+
+
+def prepare():
+    """Countries and sort titles, as Plex gives them."""
+    for key, item in library.ITEMS.items():
+        if item["type"] in ("movie", "show") and "Country" not in item:
+            item["Country"] = [{"tag": COUNTRIES[sum(map(ord, key)) % len(COUNTRIES)]}]
+        if item["type"] in ("movie", "show", "artist") and sort_title(item) != item["title"]:
+            item["titleSort"] = sort_title(item)
+
+
+def values(items, field):
+    """A section's genres, countries, age ratings or decades: Plex's /library/sections/<k>/<field>."""
+    if field == "decade":
+        found = sorted({i["year"] // 10 * 10 for i in items if i.get("year")}, reverse=True)
+        return [{"key": str(d), "title": f"{d}s"} for d in found]
+    if field == "contentRating":
+        found = sorted({i["contentRating"] for i in items if i.get("contentRating")})
+        return [{"key": quote(r, safe=""), "title": r} for r in found]
+    tag = {"genre": "Genre", "country": "Country"}[field]
+    found = sorted({t["tag"] for i in items for t in i.get(tag, [])})
+    return [{"key": tag_id(t), "title": t} for t in found]
+
+
+def tag_id(tag):
+    """A stable number for a genre or country, as Plex has."""
+    return str(sum((n + 1) * ord(c) for n, c in enumerate(tag)))
+
+
+def watched(item):
+    if item["type"] == "show":
+        return item.get("leafCount", 0) > 0 and item.get("viewedLeafCount", 0) >= item.get("leafCount", 0)
+    return bool(item.get("viewCount"))
+
+
+def filtered(items, query):
+    """Plex's sort and filter parameters for /library/sections/<k>/all."""
+    one = lambda k: query.get(k, [None])[0]  # noqa: E731
+    if one("unwatched") == "1":
+        items = [i for i in items if not watched(i)]
+    if one("unwatched") == "0":
+        items = [i for i in items if watched(i)]
+    if one("inProgress") == "1":
+        items = [i for i in items if i.get("viewOffset")]
+    for param, tag in (("genre", "Genre"), ("country", "Country")):
+        if one(param):
+            items = [i for i in items if any(tag_id(t["tag"]) == one(param) for t in i.get(tag, []))]
+    if one("decade"):
+        d = int(one("decade"))
+        items = [i for i in items if d <= i.get("year", 0) < d + 10]
+    if one("contentRating"):
+        items = [i for i in items if i.get("contentRating") == one("contentRating")]
+    order = {
+        "addedAt:desc": lambda i: -i.get("addedAt", 0),
+        "originallyAvailableAt:desc": lambda i: -i.get("year", 0),
+        "audienceRating:desc": lambda i: -i.get("audienceRating", 0),
+    }.get(one("sort"), lambda i: sort_title(i).lower())
+    return sorted(items, key=order)
 
 
 def related(key):
@@ -164,8 +261,12 @@ class Handler(BaseHTTPRequestHandler):
                 if kind and section == "3":
                     items = sorted((i for i in library.ITEMS.values() if i["type"] == kind), key=sort_title)
                     return self.json(metadata(items, start, size))
-                items = sorted((library.ITEMS[k] for k in library.SECTION_ITEMS.get(section, [])), key=sort_title)
-                return self.json(metadata(items, start, size))
+                items = [library.ITEMS[k] for k in library.SECTION_ITEMS.get(section, [])]
+                return self.json(metadata(filtered(items, query), start, size))
+            if parts[3] in ("genre", "country", "decade", "contentRating"):
+                items = [library.ITEMS[k] for k in library.SECTION_ITEMS.get(section, [])]
+                found = values(items, parts[3])
+                return self.json(container(size=len(found), Directory=found))
             if parts[3] == "collections":
                 found = list(library.COLLECTIONS.values()) if section == "1" else []
                 return self.json(metadata(found))
@@ -246,6 +347,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global ART
     port, ART = int(sys.argv[1]), Path(sys.argv[2])
+    pad_films(int(os.environ.get("DEMO_EXTRA_FILMS", "0")))
+    prepare()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"demo server on http://127.0.0.1:{port}", flush=True)
     server.serve_forever()

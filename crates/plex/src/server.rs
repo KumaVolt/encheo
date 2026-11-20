@@ -1,7 +1,7 @@
 //! One Plex Media Server at a chosen address.
 
-use crate::model::{Directories, Envelope, Hubs, MetadataPage};
-use crate::{Item, Library, Page, PlayState, Plex, Result};
+use crate::model::{Directories, Envelope, FilterValues, Hubs, MetadataPage};
+use crate::{Filter, FilterOptions, Item, Library, LibraryQuery, Page, PlayState, Plex, Result, Sort, Watched};
 use reqwest::Method;
 
 const LIBRARY_ID: &str = "com.plexapp.plugins.library";
@@ -56,9 +56,29 @@ impl Server {
         Ok(e.container.directory.into_iter().filter(|l| matches!(l.kind.as_str(), "movie" | "show" | "artist")).collect())
     }
 
-    /// A page of a library, sorted by title.
-    pub async fn library_items(&self, library_key: &str, start: u32, size: u32) -> Result<Page> {
-        self.page(&format!("/library/sections/{library_key}/all?sort=titleSort"), start, size).await
+    /// A page of a library, sorted and filtered by `query`.
+    pub async fn library_items(&self, library_key: &str, query: &LibraryQuery, start: u32, size: u32) -> Result<Page> {
+        self.page(&library_path(library_key, query), start, size).await
+    }
+
+    /// What a library can be filtered by: its genres, decades and age ratings.
+    pub async fn filter_options(&self, library_key: &str) -> Result<FilterOptions> {
+        let list = |what: &str| {
+            let path = format!("/library/sections/{library_key}/{what}");
+            async move {
+                let e: Envelope<FilterValues> = Plex::json(self.get(&path)).await?;
+                Ok::<_, crate::Error>(e.container.directory)
+            }
+        };
+        let (genres, decades, ratings) = (list("genre").await, list("decade").await, list("contentRating").await);
+        // Older servers may not list countries; the rest still works.
+        let countries = list("country").await.unwrap_or_default();
+        let filters = |v: Vec<crate::model::FilterValue>| -> Vec<Filter> {
+            v.into_iter().filter(|f| !f.key.is_empty()).map(|f| Filter { key: f.key, title: f.title }).collect()
+        };
+        let mut decades: Vec<u32> = decades?.iter().filter_map(|d| d.key.parse().ok()).collect();
+        decades.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(FilterOptions { genres: filters(genres?), countries: filters(countries), decades, ratings: filters(ratings?) })
     }
 
     pub async fn recently_added(&self, library_key: &str, size: u32) -> Result<Vec<Item>> {
@@ -322,4 +342,73 @@ pub(crate) fn flatten_hubs(hubs: Hubs) -> Vec<Item> {
         .filter_map(|v| serde_json::from_value::<Item>(v).ok())
         .filter(|i| matches!(i.kind, Movie | Show | Episode | Artist | Album | Track))
         .collect()
+}
+
+/// A library's listing for `query`. Filter values go in as Plex gave them: age ratings come
+/// already percent-encoded ("Not%20Rated", "13%2B").
+fn library_path(library_key: &str, query: &LibraryQuery) -> String {
+    let sort = match query.sort {
+        Sort::Title => "titleSort",
+        Sort::Added => "addedAt:desc",
+        Sort::Released => "originallyAvailableAt:desc",
+        Sort::Rating => "audienceRating:desc",
+    };
+    let mut path = format!("/library/sections/{library_key}/all?sort={sort}");
+    path.push_str(match query.watched {
+        Watched::All => "",
+        Watched::Unwatched => "&unwatched=1",
+        Watched::Watched => "&unwatched=0",
+        Watched::Progress => "&inProgress=1",
+    });
+    if let Some(g) = &query.genre {
+        path.push_str(&format!("&genre={}", encoded(&g.key)));
+    }
+    if let Some(c) = &query.country {
+        path.push_str(&format!("&country={}", encoded(&c.key)));
+    }
+    if let Some(d) = query.decade {
+        path.push_str(&format!("&decade={d}"));
+    }
+    if let Some(r) = &query.rating {
+        path.push_str(&format!("&contentRating={}", encoded(&r.key)));
+    }
+    path
+}
+
+/// `s` safe in a query string, leaving percent-escapes that are already there alone.
+fn encoded(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~%".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    #[test]
+    fn library_paths() {
+        assert_eq!(library_path("1", &LibraryQuery::default()), "/library/sections/1/all?sort=titleSort");
+        let q = LibraryQuery {
+            sort: Sort::Added,
+            watched: Watched::Unwatched,
+            genre: Some(Filter { key: "8".into(), title: "Action".into() }),
+            country: Some(Filter { key: "1234".into(), title: "Republic of Korea".into() }),
+            decade: Some(1990),
+            // Plex hands age ratings out already encoded.
+            rating: Some(Filter { key: "13%2B".into(), title: "13+".into() }),
+        };
+        assert_eq!(
+            library_path("2", &q),
+            "/library/sections/2/all?sort=addedAt:desc&unwatched=1&genre=8&country=1234&decade=1990&contentRating=13%2B"
+        );
+        let q = LibraryQuery { watched: Watched::Progress, rating: Some(Filter { key: "Not Rated&x".into(), title: String::new() }), ..Default::default() };
+        assert_eq!(library_path("1", &q), "/library/sections/1/all?sort=titleSort&inProgress=1&contentRating=Not%20Rated%26x");
+    }
 }

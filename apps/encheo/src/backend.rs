@@ -16,7 +16,7 @@ pub(crate) fn jf_prefix(n: usize) -> String {
     format!("jf{n}:")
 }
 
-fn jf_number(id: &str) -> Option<usize> {
+pub(crate) fn jf_number(id: &str) -> Option<usize> {
     id.strip_prefix("jf")?.split_once(':')?.0.parse().ok()
 }
 
@@ -84,10 +84,18 @@ impl Backend {
         }
     }
 
-    pub async fn library_items(&self, key: &str, kind: &str, start: u32, size: u32) -> R<encheo_plex::Page> {
+    pub async fn library_items(&self, key: &str, kind: &str, query: &encheo_plex::LibraryQuery, start: u32, size: u32) -> R<encheo_plex::Page> {
         match self {
-            Backend::Plex(s) => s.library_items(key, start, size).await.map_err(|e| e.to_string()),
-            Backend::Jf(s) => s.library_items(key, kind, start, size).await.map_err(|e| e.to_string()),
+            Backend::Plex(s) => s.library_items(key, query, start, size).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.library_items(key, kind, query, start, size).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    /// What a movie or TV library can be filtered by.
+    pub async fn filter_options(&self, key: &str, kind: &str) -> R<encheo_plex::FilterOptions> {
+        match self {
+            Backend::Plex(s) => s.filter_options(key).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.filter_options(key, kind).await.map_err(|e| e.to_string()),
         }
     }
 

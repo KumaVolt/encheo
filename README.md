@@ -54,8 +54,12 @@ video from the source to tell you whether it will keep up.
 
 - **Library:** Continue Watching, recently added, movies, TV and music libraries, favourites and
   search across sources
+- **Sort and filter:** movies and shows by genre, country, decade, age rating or watched state,
+  sorted by title, date added, release or rating, with an A–Z rail to jump through the library
 - **Details:** artwork, ratings, cast and crew, related titles, and the file's video, audio and HDR
   formats
+- **Requests:** ask [Seerr](https://github.com/seerr-team/seerr) (or Overseerr, Jellyseerr) for films
+  and shows you don't have, right from their page, and watch the download's progress there
 - **Trailers:** from your server, else from YouTube (AniList for anime), played inside the app
 - **Playback:** hardware decoding (VideoToolbox, D3D11, VA-API, MediaCodec), chapters, episode
   list, next episode, skip intro and credits, speed control, Picture in Picture on desktop,
@@ -121,6 +125,7 @@ file, never a transcode.
 |---|---|
 | [`crates/plex`](crates/plex) | Plex client: sign-in, servers, libraries, Plex Home |
 | [`crates/jellyfin`](crates/jellyfin) | Jellyfin and Emby client |
+| [`crates/seerr`](crates/seerr) | Seerr client: sign-in, search, request status and download progress, requests |
 | [`crates/vfs`](crates/vfs) | File sources: local folders, SMB, WebDAV, SFTP, FTP, NFS and DLNA |
 | [`crates/discovery`](crates/discovery) | Finds media servers and shares on the local network |
 | [`crates/sublang`](crates/sublang) | Subtitle language detection |
@@ -140,7 +145,8 @@ No. Encheo asks for the original file and decodes it on the device, with the har
 where there is one and FFmpeg in software otherwise.
 
 **Does it talk to anything besides my servers?**
-plex.tv when you use Plex. When your server has no trailer or lyrics of its own, Encheo looks the
+plex.tv when you use Plex, and your Seerr if you add one (its posters come from TMDB's image
+server). When your server has no trailer or lyrics of its own, Encheo looks the
 title up on YouTube, [AniList](https://anilist.co) (anime only) or [LRCLIB](https://lrclib.net),
 sending only the title (for songs also the artist, album and length). There is no analytics or
 tracking.

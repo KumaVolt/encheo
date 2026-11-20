@@ -354,7 +354,9 @@ fn play_file(index: usize, path: &str) {
     ps(&ui).set_buffering(true);
     let path = path.to_string();
     rt().spawn_blocking(move || {
-        let target = connected(index).map(|src| src.direct_url(&path));
+        let target = connected(index).and_then(|src| {
+            if encheo_vfs::is_strm(&path) { strm_url(&src, &path).map(Some) } else { Ok(src.direct_url(&path)) }
+        });
         on_ui(move |ui| {
             let target = match target {
                 Ok(t) => t,
@@ -448,6 +450,16 @@ pub(crate) fn play_item(item: &Item) -> bool {
     }
 }
 
+/// A `.strm` file: the stream it points at, played as it is.
+fn strm_url(src: &Source, path: &str) -> Result<encheo_vfs::DirectUrl, String> {
+    use std::io::Read;
+    let mut text = String::new();
+    // An address fits in a few hundred bytes; don't read a mislabelled video.
+    src.open(path).map_err(|e| e.to_string())?.take(16 * 1024).read_to_string(&mut text).map_err(|_| "it isn't a text file".to_string())?;
+    let url = encheo_vfs::strm_target(&text).ok_or("it doesn't hold an http, https, rtsp or rtmp address")?;
+    Ok(encheo_vfs::DirectUrl { url, headers: vec![] })
+}
+
 /// Save where playback is, for a file.
 pub(crate) fn record_progress(item: &Item, position: f64) {
     let duration = player().map(|p| p.status().duration).filter(|d| *d > 0.0).unwrap_or(0.0);
@@ -478,6 +490,9 @@ pub(crate) fn add_source(kind: i32, name: String, location: String, username: St
         ui.set_add_source_open(false);
         ui.set_sources_open(false);
         return begin_signin();
+    }
+    if kind == 9 {
+        return crate::requests::sign_in(location, username, password);
     }
     if kind == 3 {
         let replace = match editing {
@@ -640,6 +655,7 @@ pub(crate) fn fill_sources() {
         });
         std::iter::once(plex).chain(servers).chain(files).collect::<Vec<_>>()
     });
+    let rows: Vec<SourceRow> = rows.into_iter().chain(crate::requests::source_row()).collect();
     ui().set_sources(ModelRc::new(VecModel::from(rows)));
 }
 
@@ -663,6 +679,19 @@ pub(crate) fn new_source() {
 /// Open the form filled in with a source's settings. The password stays blank: blank keeps it.
 pub(crate) fn edit_source(kind: &str, index: usize) {
     let ui = ui();
+    if kind == "seerr" {
+        let Some((address, login)) = crate::requests::form() else { return };
+        with_state(|s| s.editing = None);
+        ui.set_form_editing(true);
+        ui.set_form_kind(9);
+        ui.set_form_name(SharedString::new());
+        ui.set_form_location(address.into());
+        ui.set_form_user(login.into());
+        ui.set_form_password(SharedString::new());
+        ui.set_add_source_status(SharedString::new());
+        ui.set_add_source_open(true);
+        return;
+    }
     let found = with_state(|s| match kind {
         "files" => s.session.sources.get(index).map(|c| {
             let n = FORM_KINDS.iter().find(|(_, k)| *k == c.kind).map_or(2, |(n, _)| *n);
@@ -686,6 +715,7 @@ pub(crate) fn edit_source(kind: &str, index: usize) {
 /// Remove a source (the user has confirmed). Plex: sign out.
 pub(crate) fn remove_source(kind: &str, index: usize) {
     match kind {
+        "seerr" => crate::requests::remove(),
         "plex" => {
             let others = with_state(|s| {
                 s.session.sign_out();
