@@ -1,0 +1,3 @@
+# Built into the app and split on blank lines: keep LF line endings on every platform, Windows
+# checkouts included (else the notices test and the Licences page break there).
+apps/encheo/notices.txt text eol=lf
