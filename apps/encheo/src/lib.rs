@@ -5,12 +5,15 @@
 
 #[cfg(target_os = "android")]
 mod android_media;
+#[cfg(target_os = "android")]
+mod android_video;
 mod anilist;
 mod backend;
 mod favourites;
 mod images;
 mod langs;
 mod lyrics;
+mod profiles;
 mod progress;
 mod shares;
 mod player;
@@ -48,6 +51,8 @@ struct Models {
     home_rows: Rc<VecModel<HomeRow>>,
     /// The poster models inside `home_rows`, kept so artwork can be filled in as it arrives.
     row_models: RefCell<Vec<Rc<VecModel<Poster>>>>,
+    /// Where each of those rows fetches more titles when scrolled near its end.
+    row_more: RefCell<Vec<RowMore>>,
     grid: Rc<VecModel<Poster>>,
     albums: Rc<VecModel<Poster>>,
     tracks: Rc<VecModel<Track>>,
@@ -206,7 +211,25 @@ fn ui_clear_toast() {
 }
 
 fn plex(session: &Session) -> Plex {
-    Plex::new(ClientInfo::new(session.client_id.clone(), format!("Encheo ({})", std::env::consts::OS)))
+    let plex = Plex::new(ClientInfo::new(session.client_id.clone(), format!("Encheo ({})", std::env::consts::OS)));
+    match plex_tv_stand_in() {
+        Some(base) => plex.with_base_urls(base, base),
+        None => plex,
+    }
+}
+
+/// Development: something else answering for plex.tv, such as the demo server (profiles,
+/// servers). ENCHEO_PLEX_TV=<url>, or on Android `setprop debug.encheo.plextv <url>`.
+fn plex_tv_stand_in() -> Option<&'static str> {
+    static BASE: OnceLock<Option<String>> = OnceLock::new();
+    BASE.get_or_init(|| {
+        #[cfg(target_os = "android")]
+        let v = player::android_prop_value("debug.encheo.plextv");
+        #[cfg(not(target_os = "android"))]
+        let v = std::env::var("ENCHEO_PLEX_TV").unwrap_or_default();
+        Some(v.trim_end_matches('/').to_string()).filter(|v| v.starts_with("http"))
+    })
+    .as_deref()
 }
 
 // ---------- Sign-in and server ----------
@@ -244,6 +267,7 @@ fn begin_signin() {
                     });
                     ui.set_signin_status("Signed in. Finding your servers…".into());
                     choose_server(token, None);
+                    profiles::after_signin();
                 }
                 Err(e) => ui.set_signin_status(format!("{e}. Get a new code to try again.").into()),
             }
@@ -302,6 +326,7 @@ fn resume_session() {
         let others = with_state(|s| !s.session.media_servers.is_empty() || !s.session.sources.is_empty());
         return if skip || others { enter_home() } else { begin_signin() };
     };
+    profiles::at_start();
     let Some(saved) = saved else { return choose_server(token, None) };
     let server = plex.server_at(&saved.name, &saved.base_url, &saved.token);
     ui().set_screen("home".into());
@@ -355,6 +380,8 @@ fn enter_home() {
         // Per server: its libraries (with their recently added items) and what's in progress.
         let several = backends.len() > 1;
         let mut libs: Vec<(String, encheo_plex::Library, Vec<Item>)> = Vec::new();
+        // Each library's server and where its Recently Added row pages for more.
+        let mut lib_more: Vec<(backend::Backend, Option<String>)> = Vec::new();
         let mut on_deck = Vec::new();
         let mut collections = Vec::new();
         // The servers' suggested rows (Top Rated, More in <genre>, …), by library index.
@@ -369,10 +396,11 @@ fn enter_home() {
                 Ok(list) => {
                     collections.extend(b.collections(&list).await);
                     for l in list {
-                        let recent = b.recently_added(&l.key, 24).await.unwrap_or_default();
+                        let recent = b.recently_added(&l.key, b.recent_size()).await.unwrap_or_default();
                         if matches!(l.kind.as_str(), "movie" | "show") {
                             discover.push((libs.len(), b.discover(&l.key, &l.kind).await));
                         }
+                        lib_more.push((b.clone(), b.recent_more(&l.key).filter(|_| recent.len() as u32 >= b.recent_size())));
                         libs.push((b.label(), l, recent));
                     }
                 }
@@ -413,6 +441,8 @@ fn enter_home() {
             let wide = ui.global::<Theme>().get_tv();
             let mut rows = Vec::new();
             let mut row_models = Vec::new();
+            let mut row_more: Vec<RowMore> = Vec::new();
+            let none = || RowMore::default();
             // Watchlist entries live on plex.tv; their ids say so, and opening one finds it on the server.
             let watch: Vec<Item> = watchlist
                 .into_iter()
@@ -426,11 +456,13 @@ fn enter_home() {
                 let model = Rc::new(VecModel::from(favs));
                 rows.push(HomeRow { title: "Favourites".into(), library: -1, landscape: false, square: false, items: ModelRc::from(model.clone()) });
                 row_models.push(model);
+                row_more.push(none());
             }
             if !watch.is_empty() {
                 let model = Rc::new(VecModel::from(watch.iter().map(|i| poster(i, wide)).collect::<Vec<_>>()));
                 rows.push(HomeRow { title: "Watchlist".into(), library: -1, landscape: wide, square: false, items: ModelRc::from(model.clone()) });
                 row_models.push(model);
+                row_more.push(none());
                 remember(watch);
             }
             for (index, (group, l, items)) in libs.iter().enumerate() {
@@ -449,19 +481,22 @@ fn enter_home() {
                     items: ModelRc::from(model.clone()),
                 });
                 row_models.push(model);
+                let (b, path) = lib_more[index].clone();
+                row_more.push(RowMore::new(b, path, items.len(), true, land, generation));
             }
             // The suggested rows, taking turns between libraries so films and TV mix.
             let longest = discover.iter().map(|(_, r)| r.len()).max().unwrap_or(0);
             let mut suggested = Vec::new();
             for n in 0..longest {
                 for (index, lib_rows) in &discover {
-                    if let Some((title, items)) = lib_rows.get(n) {
+                    if let Some(encheo_plex::Row { title, items, more }) = lib_rows.get(n) {
                         // Episode rows (Recently Released Episodes) are wide everywhere.
                         let land = wide || items.iter().all(|i| i.kind == ItemKind::Episode);
                         let title = if several { format!("{title} · {}", libs[*index].0) } else { title.clone() };
                         let model = Rc::new(VecModel::from(items.iter().map(|i| poster(i, land)).collect::<Vec<_>>()));
                         rows.push(HomeRow { title: title.into(), library: -1, landscape: land, square: false, items: ModelRc::from(model.clone()) });
                         row_models.push(model);
+                        row_more.push(RowMore::new(lib_more[*index].0.clone(), more.clone(), items.len(), false, land, generation));
                         suggested.extend(items.iter().cloned());
                     }
                 }
@@ -471,6 +506,7 @@ fn enter_home() {
                 let model = Rc::new(VecModel::from(collections.iter().map(|i| poster(i, wide)).collect::<Vec<_>>()));
                 rows.push(HomeRow { title: "Collections".into(), library: -1, landscape: wide, square: false, items: ModelRc::from(model.clone()) });
                 row_models.push(model);
+                row_more.push(none());
                 remember(collections);
             }
             let grouped: Vec<Item> = libs.iter().flat_map(|(_, _, items)| group_recent(items).into_iter().map(|(i, _)| i)).collect();
@@ -479,8 +515,89 @@ fn enter_home() {
             with_models(|m| {
                 m.continue_watching.set_vec(cw);
                 *m.row_models.borrow_mut() = row_models;
+                *m.row_more.borrow_mut() = row_more;
                 m.home_rows.set_vec(rows);
             });
+        });
+    });
+}
+
+/// Rows stop growing here: past this, See All (the library) is the better way to browse.
+const ROW_MAX: usize = 40;
+const ROW_PAGE: u32 = 20;
+
+/// A Home row's next page: its server, the path that pages, and how far it got.
+#[derive(Default)]
+struct RowMore {
+    backend: Option<backend::Backend>,
+    path: Option<String>,
+    /// Titles fetched so far (before grouping), the next page's start.
+    loaded: usize,
+    busy: bool,
+    /// Recently Added: episodes grouped under their show, like the first page.
+    grouped: bool,
+    landscape: bool,
+    /// Home's generation the row belongs to; a reload replaces the rows.
+    generation: u64,
+}
+
+impl RowMore {
+    fn new(b: backend::Backend, path: Option<String>, loaded: usize, grouped: bool, landscape: bool, generation: u64) -> Self {
+        Self { backend: Some(b), path, loaded, busy: false, grouped, landscape, generation }
+    }
+}
+
+/// Whether Home row `ri` can still grow (more titles to fetch, or some on their way).
+fn row_has_more(ri: usize) -> bool {
+    with_models(|m| m.row_more.borrow().get(ri).is_some_and(|r| r.busy || (r.path.is_some() && r.loaded < ROW_MAX)))
+}
+
+/// Home row `ri` was scrolled near its end: fetch its next titles and add them.
+fn more_in_row(ri: usize) {
+    let job = with_models(|m| {
+        let mut all = m.row_more.borrow_mut();
+        let r = all.get_mut(ri)?;
+        if r.busy || r.loaded >= ROW_MAX {
+            return None;
+        }
+        let (b, path) = (r.backend.clone()?, r.path.clone()?);
+        r.busy = true;
+        Some((b, path, r.loaded, r.generation))
+    });
+    let Some((b, path, start, generation)) = job else { return };
+    rt().spawn(async move {
+        let page = b.row_page(&path, start as u32, ROW_PAGE).await;
+        on_ui(move |_| {
+            let fresh = with_models(|m| {
+                let mut all = m.row_more.borrow_mut();
+                let r = all.get_mut(ri).filter(|r| r.generation == generation)?;
+                r.busy = false;
+                let items = match page {
+                    Ok(items) => items,
+                    Err(e) => {
+                        eprintln!("more titles for a row: {e}");
+                        r.path = None;
+                        return None;
+                    }
+                };
+                r.loaded += items.len();
+                if items.len() < ROW_PAGE as usize || r.loaded >= ROW_MAX {
+                    r.path = None;
+                }
+                let model = m.row_models.borrow().get(ri).cloned()?;
+                let have: std::collections::HashSet<SharedString> = model.iter().map(|p| p.id).collect();
+                let grouped = if r.grouped { group_recent(&items) } else { items.iter().map(|i| (i.clone(), 1)).collect() };
+                for g in &grouped {
+                    let p = if r.grouped { recent_poster(g, r.landscape) } else { poster(&g.0, r.landscape) };
+                    if !have.contains(&p.id) {
+                        model.push(p);
+                    }
+                }
+                Some(items.into_iter().chain(grouped.into_iter().map(|(i, _)| i)).collect::<Vec<_>>())
+            });
+            if let Some(items) = fresh {
+                remember(items);
+            }
         });
     });
 }
@@ -835,7 +952,7 @@ fn poster(item: &Item, landscape: bool) -> Poster {
         id: item.rating_key.clone().into(),
         title: title.into(),
         subtitle: subtitle.into(),
-        image: want_image(&url),
+        image: Image::default(),
         art_url: url.into(),
         progress: item.progress().unwrap_or(0.0),
         watched: item.is_watched() && !square,
@@ -847,11 +964,23 @@ fn art_url(path: Option<&str>, w: u32, h: u32) -> String {
     match path {
         // Jellyfin/Emby give full image URLs; ask for the size we need.
         Some(p) if p.contains("/Items/") => format!("{p}&maxWidth={w}&maxHeight={h}"),
-        // Other full URLs (Plex watchlist art from plex.tv) as they are.
+        // Plex's own pictures on plex.tv (cast and crew photos, watchlist art) are full size,
+        // up to 2000 x 2000 (16 MB each once decoded): through the server's resizer, as Plex's
+        // own apps do. Without a Plex server, as they are.
+        Some(p) if p.starts_with("http") && plex_hosted(p) => server().map(|s| s.image_url(p, w, h)).unwrap_or_else(|| p.to_string()),
+        // Other full URLs as they are.
         Some(p) if p.starts_with("http") => p.to_string(),
         Some(p) if !p.is_empty() => server().map(|s| s.image_url(p, w, h)).unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+/// A picture on plex.tv's servers (metadata-static.plex.tv and the like).
+fn plex_hosted(url: &str) -> bool {
+    let rest = url.split_once("://").map_or("", |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit('@').next().unwrap_or("").split(':').next().unwrap_or("").to_ascii_lowercase();
+    host == "plex.tv" || host.ends_with(".plex.tv")
 }
 
 /// The image if cached; otherwise start loading it and return an empty image for now.
@@ -880,6 +1009,8 @@ fn want_image(url: &str) -> Image {
                         s.images.insert(url.clone(), img.clone());
                     });
                     apply_image(ui, &url, &img);
+                    let art = ui.global::<Art>();
+                    art.set_loaded(art.get_loaded().wrapping_add(1));
                 });
             });
             Image::default()
@@ -888,24 +1019,8 @@ fn want_image(url: &str) -> Image {
 }
 
 fn apply_image(ui: &AppWindow, url: &str, img: &Image) {
-    fn update_posters(model: &VecModel<Poster>, url: &str, img: &Image) {
-        for i in 0..model.row_count() {
-            if let Some(mut p) = model.row_data(i)
-                && p.art_url == url
-            {
-                p.image = img.clone();
-                model.set_row_data(i, p);
-            }
-        }
-    }
+    // (Posters aren't here: each card asks Art for its picture while it's near the screen.)
     with_models(|m| {
-        update_posters(&m.continue_watching, url, img);
-        update_posters(&m.grid, url, img);
-        for row in m.row_models.borrow().iter() {
-            update_posters(row, url, img);
-        }
-        update_posters(&m.albums, url, img);
-        update_posters(&m.related, url, img);
         for i in 0..m.people.row_count() {
             if let Some(mut p) = m.people.row_data(i)
                 && p.art_url == url
@@ -1263,9 +1378,58 @@ fn find_trailer(id: &str) {
 fn play_trailer() {
     match with_state(|s| s.trailer.clone()) {
         Some(backend::Trailer::Play(item)) => play_fresh(*item),
-        Some(backend::Trailer::Link(url)) => open_url(&url),
+        Some(backend::Trailer::Link(url)) => open_trailer_link(&url),
         None => {}
     }
+}
+
+/// An online trailer. Android: YouTube trailers play inside Encheo, in YouTube's embedded
+/// player; elsewhere (and for other sites) the browser or the site's app opens it.
+fn open_trailer_link(url: &str) {
+    #[cfg(target_os = "android")]
+    if let (Some(app), Some(id)) = (ANDROID_APP.get(), youtube_id(url)) {
+        match android_trailer(app, id) {
+            Ok(()) => return,
+            Err(e) => eprintln!("trailer player: {e}"),
+        }
+    }
+    open_url(url);
+}
+
+/// The video id of a YouTube address (youtube.com/watch?v=…, youtu.be/…, youtube.com/embed/…).
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn youtube_id(url: &str) -> Option<&str> {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r).trim_start_matches("www.").trim_start_matches("m.");
+    let id = if let Some(r) = rest.strip_prefix("youtu.be/") {
+        r
+    } else if let Some(r) = rest.strip_prefix("youtube.com/embed/") {
+        r
+    } else {
+        let query = rest.strip_prefix("youtube.com/watch")?.split_once('?')?.1;
+        query.split('&').find_map(|kv| kv.strip_prefix("v="))?
+    };
+    let id = id.split(['?', '&', '#', '/']).next()?;
+    (id.len() >= 6 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then_some(id)
+}
+
+/// Android: start Encheo's trailer screen (TrailerActivity) for a YouTube video.
+#[cfg(target_os = "android")]
+fn android_trailer(app: &slint::android::AndroidApp, id: &str) -> jni::errors::Result<()> {
+    use jni::objects::{JObject, JValue};
+    // SAFETY: both pointers come from the running activity and stay valid while it runs.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    let mut env = vm.attach_current_thread()?;
+    let intent = env.new_object("android/content/Intent", "()V", &[])?;
+    let (pkg, class) = (env.new_string("app.encheo")?, env.new_string("app.encheo.TrailerActivity")?);
+    env.call_method(&intent, "setClassName", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", &[JValue::Object(&pkg), JValue::Object(&class)])?;
+    let (key, video) = (env.new_string("video")?, env.new_string(id)?);
+    env.call_method(&intent, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", &[JValue::Object(&key), JValue::Object(&video)])?;
+    let started = env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)]);
+    if started.is_err() {
+        let _ = env.exception_clear();
+    }
+    started.map(|_| ())
 }
 
 /// Open a web address in the system's browser (Android: whatever app handles it, e.g. YouTube).
@@ -1377,7 +1541,7 @@ fn favourite_posters() -> Vec<Poster> {
                 id: f.id.into(),
                 title: f.title.into(),
                 subtitle: f.subtitle.into(),
-                image: want_image(&url),
+                image: Image::default(),
                 art_url: url.into(),
                 progress: 0.0,
                 watched: false,
@@ -1802,6 +1966,8 @@ fn stop_playback() {
         report(PlayState::Stopped, status.position);
     }
     p.stop();
+    #[cfg(target_os = "android")]
+    android_video::stop();
     let ui = ui();
     if ps(&ui).get_pip() {
         toggle_pip();
@@ -1838,10 +2004,19 @@ fn tick() {
     #[cfg(target_os = "ios")]
     ios_video::follow_size();
     if ui.get_screen() != "player" {
+        #[cfg(target_os = "android")]
+        android_video::stop();
         return music_tick(&ui);
     }
     let Some(p) = player() else { return };
     let ps = ps(&ui);
+    // Android: HDR straight to the TV when it takes it; Encheo then draws the subtitles.
+    #[cfg(target_os = "android")]
+    {
+        let line = android_video::follow(with_state(|s| s.session.prefs.direct));
+        ps.set_direct(line.is_some());
+        ps.set_direct_sub(line.unwrap_or_default().into());
+    }
     let st = p.status();
     ps.set_position(st.position as f32);
     if st.duration > 0.0 {
@@ -1986,6 +2161,8 @@ fn open_panel(which: &str) {
                     })
                     .collect()
             };
+            // TV remote: start on what's playing.
+            ps.set_panel_row(entries.iter().position(|e| e.current).unwrap_or(0) as i32);
             ps.set_list_items(ModelRc::new(VecModel::from(entries)));
         }
         _ => {}
@@ -3207,8 +3384,13 @@ fn nav_key(key: &str) -> bool {
     // Windows over the page: About closes with OK; the add/edit form has text fields, which take
     // the keys themselves; Settings has its own focus.
     if ui.get_about_open() {
-        if enter {
+        let col = ui.get_about_col();
+        if enter && col == 0 {
+            open_notices();
+        } else if enter {
             ui.set_about_open(false);
+        } else if key == left.as_str() || key == right.as_str() {
+            ui.set_about_col(if key == left.as_str() { 0 } else { 1 });
         }
         return true;
     }
@@ -3338,7 +3520,18 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         } else if is(Key::LeftArrow) {
             if col == 0 { to_side(ui) } else { set_focus(ui, "content", row, col - 1) }
         } else if is(Key::RightArrow) {
-            set_focus(ui, "content", row, (col + 1).min(lens[row as usize].0 - 1));
+            let len = lens[row as usize].0;
+            let bb = i32::from(!billboard.is_empty());
+            let cw = i32::from(with_models(|m| m.continue_watching.row_count() > 0));
+            if col + 1 < len {
+                set_focus(ui, "content", row, col + 1);
+            } else if row >= bb + cw && row_has_more((row - bb - cw) as usize) {
+                // The next titles are on their way; they extend the row.
+                more_in_row((row - bb - cw) as usize);
+            } else if row >= bb && len > 1 {
+                // The end of a row: back to its start, as on Netflix.
+                set_focus(ui, "content", row, 0);
+            }
         }
         return true;
     }
@@ -3401,16 +3594,21 @@ fn settings_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter
     }
     let sources: Vec<SourceRow> = ui.get_sources().iter().collect();
     let confirm = ui.get_sources_confirm();
+    // The sources, the Animations switch, (Android) the HDR switch, then the buttons.
+    let switch_row = sources.len() as i32;
+    let direct_row = if ui.get_direct_info().is_empty() { -1 } else { switch_row + 1 };
     let width = |r: i32| -> i32 {
         match sources.get(r as usize) {
             Some(_) if r == confirm => 2,
+            Some(s) if s.kind == "plex" && s.signed_in && ui.get_can_switch_profile() => 2,
             Some(s) if s.kind == "plex" => 1,
             Some(_) => 2,
+            None if r == switch_row || r == direct_row => 1,
             None if ui.get_can_tv_mode() => 4,
             None => 3,
         }
     };
-    let last = sources.len() as i32;
+    let last = sources.len() as i32 + if direct_row < 0 { 1 } else { 2 };
     let row = row.clamp(0, last);
     let col = col.clamp(0, width(row) - 1);
     if enter {
@@ -3427,11 +3625,17 @@ fn settings_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter
                 begin_signin();
             }
             Some(src) if src.kind != "plex" && col == 0 => shares::edit_source(&src.kind, src.index as usize),
+            Some(src) if src.kind == "plex" && col == 0 && ui.get_can_switch_profile() => {
+                settings_closed();
+                profiles::open();
+            }
             // Remove / Sign Out ask first; the focus starts on Cancel.
             Some(_) => {
                 ui.set_sources_confirm(row);
                 set_focus(ui, "dialog", row, 0);
             }
+            None if row == switch_row => toggle_animations(),
+            None if row == direct_row => toggle_direct(),
             None => match col {
                 0 => {
                     ui.set_sources_open(false);
@@ -3594,6 +3798,34 @@ impl slint::winit_030::CustomApplicationHandler for KeyTap {
     }
 }
 
+/// The third-party notices (scripts/notices.sh), in pieces a list can show without laying out
+/// 650 KB of text at once. Built only while they're open.
+const NOTICES: &str = include_str!("../notices.txt");
+
+fn open_notices() {
+    let ui = ui();
+    ui.set_notices(ModelRc::new(VecModel::from(notice_pieces(NOTICES))));
+    ui.set_notices_open(true);
+}
+
+fn notice_pieces(text: &str) -> Vec<SharedString> {
+    let mut pieces = Vec::new();
+    let mut piece = String::new();
+    for paragraph in text.split("\n\n") {
+        if !piece.is_empty() && piece.len() + paragraph.len() > 2000 {
+            pieces.push(SharedString::from(std::mem::take(&mut piece)));
+        }
+        if !piece.is_empty() {
+            piece.push_str("\n\n");
+        }
+        piece.push_str(paragraph);
+    }
+    if !piece.is_empty() {
+        pieces.push(piece.into());
+    }
+    pieces
+}
+
 /// Settings opened: with the remote in use, the focus moves straight into it.
 pub(crate) fn focus_settings() {
     let ui = ui();
@@ -3616,7 +3848,15 @@ fn settings_closed() {
 /// Back on Home: windows first (About, the form, Settings with a pending "Remove?" first), then
 /// search results and library pages go back to Home. False when there's nothing to go back to.
 fn go_back() -> bool {
+    if profiles::back() {
+        return true;
+    }
     let ui = ui();
+    if ui.get_notices_open() {
+        ui.set_notices_open(false);
+        ui.set_notices(ModelRc::default());
+        return true;
+    }
     if ui.global::<Nav>().get_zone() == "music" {
         leave_music_bar();
         return true;
@@ -3799,6 +4039,40 @@ thread_local! {
 }
 
 /// Desktop: TV mode on or off. TV mode is full screen; it's remembered for the next start.
+/// The decoder draws HDR video onto Android's video layer: mpv doesn't draw into Slint's frame.
+fn direct_video() -> bool {
+    #[cfg(target_os = "android")]
+    return android_video::direct();
+    #[cfg(not(target_os = "android"))]
+    false
+}
+
+/// Android: HDR and surround passthrough on or off (Settings). Applies from the next moment of
+/// playback: the video's path is chosen again four times a second.
+fn toggle_direct() {
+    let ui = ui();
+    let on = !ui.get_direct_on();
+    ui.set_direct_on(on);
+    with_state(|s| {
+        s.session.prefs.direct = on;
+        s.session.save();
+    });
+    #[cfg(target_os = "android")]
+    if let Some(p) = player() {
+        p.set_spdif(&android_video::spdif(on));
+    }
+}
+
+fn toggle_animations() {
+    let ui = ui();
+    let on = !ui.global::<Theme>().get_animate();
+    ui.global::<Theme>().set_animate(on);
+    with_state(|s| {
+        s.session.prefs.animations = on;
+        s.session.save();
+    });
+}
+
 fn toggle_tv_mode() {
     let ui = ui();
     let on = !ui.global::<Theme>().get_tv();
@@ -3886,6 +4160,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         continue_watching: Rc::new(VecModel::default()),
         home_rows: Rc::new(VecModel::default()),
         row_models: RefCell::new(Vec::new()),
+        row_more: RefCell::new(Vec::new()),
         grid: Rc::new(VecModel::default()),
         albums: Rc::new(VecModel::default()),
         tracks: Rc::new(VecModel::default()),
@@ -3919,6 +4194,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
             let ps = ui.global::<PlayerState>();
             ps.set_sub_scale(prefs.sub_scale as f32);
             ps.set_auto_skip(prefs.auto_skip);
+            // Android: what the TV and sound output take as is, checked once per launch.
+            #[cfg(target_os = "android")]
+            {
+                android_video::init(p.mpv());
+                p.set_spdif(&android_video::spdif(prefs.direct));
+                ui.set_direct_info(android_video::summary().into());
+                ui.set_direct_on(prefs.direct);
+            }
             PLAYER.with(|slot| *slot.borrow_mut() = Some(Rc::new(p)));
         }
         Err(e) => eprintln!("mpv failed to start: {e}"),
@@ -3941,6 +4224,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 slint::RenderingState::BeforeRendering => {
                     if let Some(ui) = weak.upgrade()
                         && ui.get_screen() == "player"
+                        && !direct_video()
                     {
                         let size = ui.window().size();
                         p.draw(size.width, size.height);
@@ -4143,6 +4427,24 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
     ui.on_refresh(refresh);
     ui.on_tv_mode(toggle_tv_mode);
+    ui.on_animations_toggled(toggle_animations);
+    ui.on_direct_toggled(toggle_direct);
+    ui.on_open_notices(open_notices);
+    ui.on_notices_closed(|| crate::ui().set_notices(ModelRc::default()));
+    ui.on_profile_pick(|i| profiles::pick(i.max(0) as usize));
+    ui.on_pin_key(|k| profiles::pin_key(&k));
+    ui.on_profile_key(|k| profiles::key(&k));
+    ui.on_profiles_back(|| {
+        profiles::back();
+    });
+    ui.on_switch_profile(|| {
+        settings_closed();
+        profiles::open();
+    });
+    ui.on_row_more(|ri| more_in_row(ri.max(0) as usize));
+    ui.global::<Theme>().set_animate(with_state(|s| s.session.prefs.animations));
+    // Posters ask for their pictures while on or near the screen.
+    ui.global::<Art>().on_image(|url, _| if url.starts_with("http") { want_image(&url) } else { Image::default() });
 
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);
@@ -4184,6 +4486,36 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn notices_split_into_pieces_without_losing_text() {
+        let pieces = super::notice_pieces(super::NOTICES);
+        assert!(pieces.len() > 50);
+        assert_eq!(pieces.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n\n"), super::NOTICES);
+        assert!(super::NOTICES.contains("FFmpeg") && super::NOTICES.contains("GNU LESSER GENERAL PUBLIC LICENSE"));
+    }
+
+    #[test]
+    fn plex_hosted_pictures() {
+        use super::plex_hosted;
+        assert!(plex_hosted("https://metadata-static.plex.tv/people/5d7768.jpg"));
+        assert!(plex_hosted("https://plex.tv/users/abc/avatar?c=1"));
+        assert!(!plex_hosted("https://evilplex.tv/x.jpg"));
+        assert!(!plex_hosted("https://plex.tv.example.com/x.jpg"));
+        assert!(!plex_hosted("http://192.168.1.10:32400/library/metadata/1/thumb"));
+        assert!(!plex_hosted("/library/metadata/1/thumb"));
+    }
+
+    #[test]
+    fn youtube_ids() {
+        use super::youtube_id;
+        assert_eq!(youtube_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), Some("dQw4w9WgXcQ"));
+        assert_eq!(youtube_id("https://www.youtube.com/watch?feature=x&v=abc_DEF-12&t=3"), Some("abc_DEF-12"));
+        assert_eq!(youtube_id("https://youtu.be/dQw4w9WgXcQ?t=10"), Some("dQw4w9WgXcQ"));
+        assert_eq!(youtube_id("https://www.youtube.com/embed/dQw4w9WgXcQ"), Some("dQw4w9WgXcQ"));
+        assert_eq!(youtube_id("https://www.dailymotion.com/video/x8abc"), None);
+        assert_eq!(youtube_id("https://www.youtube.com/watch?v=<script>"), None);
+    }
+
     use super::{runtime, short_summary};
 
     #[test]

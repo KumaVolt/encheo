@@ -259,7 +259,7 @@ impl Server {
 
     /// More rows for Home, like Plex's suggestions: Recently Released, Top Rated, and a random
     /// pick of what hasn't been watched.
-    pub async fn discover(&self, library_key: &str, kind: &str) -> Result<Vec<(String, Vec<Item>)>> {
+    pub async fn discover(&self, library_key: &str, kind: &str) -> Result<Vec<encheo_plex::Row>> {
         let what = if kind == "show" { "TV" } else { "Movies" };
         let mut rows = Vec::new();
         for (title, query) in [
@@ -267,19 +267,25 @@ impl Server {
             (format!("Top Rated {what}"), "SortBy=CommunityRating&SortOrder=Descending"),
             (format!("Unwatched {what}"), "SortBy=Random&IsPlayed=false"),
         ] {
-            let items = self
-                .items(&format!(
-                    "/Users/{}/Items?ParentId={}&Recursive=true&IncludeItemTypes={}&{query}&Limit=20&Fields={FIELDS}",
-                    self.uid(),
-                    self.raw_id(library_key),
-                    Self::library_types(kind)
-                ))
-                .await?;
+            let path = format!(
+                "/Users/{}/Items?ParentId={}&Recursive=true&IncludeItemTypes={}&{query}&Fields={FIELDS}",
+                self.uid(),
+                self.raw_id(library_key),
+                Self::library_types(kind)
+            );
+            let items = self.items(&format!("{path}&Limit=20")).await?;
             if items.len() >= 4 {
-                rows.push((title, items));
+                // A random pick has no next page.
+                let more = (!query.contains("Random")).then_some(path);
+                rows.push(encheo_plex::Row { title, items, more });
             }
         }
         Ok(rows)
+    }
+
+    /// The next titles of a row (`Row::more`), from `start`.
+    pub async fn row_page(&self, path: &str, start: u32, size: u32) -> Result<Vec<Item>> {
+        self.items(&format!("{path}&StartIndex={start}&Limit={size}")).await
     }
 
     /// Partly watched items, then the next episode of shows in progress.

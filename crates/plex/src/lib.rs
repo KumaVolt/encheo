@@ -156,6 +156,37 @@ impl Plex {
         Ok(e.container.metadata)
     }
 
+    /// The people in the account's Plex Home (just the owner when there's no Home).
+    pub async fn home_users(&self, token: &str) -> Result<Vec<HomeUser>> {
+        #[derive(serde::Deserialize)]
+        struct Home {
+            #[serde(default)]
+            users: Vec<HomeUser>,
+        }
+        let url = format!("{}/api/v2/home/users", self.plex_tv);
+        let home: Home = Self::json(self.request(reqwest::Method::GET, &url, Some(token))).await?;
+        Ok(home.users)
+    }
+
+    /// Become another person of the Home: their token (watched list, Continue Watching and
+    /// watchlist are theirs). `pin` for protected users; a wrong one is a 401/403 status error.
+    pub async fn switch_user(&self, token: &str, uuid: &str, pin: Option<&str>) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Switched {
+            auth_token: String,
+        }
+        // The uuid comes from plex.tv; keep it to one path segment all the same.
+        let uuid: String = uuid.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+        let url = format!("{}/api/v2/home/users/{uuid}/switch", self.plex_tv);
+        let mut r = self.request(reqwest::Method::POST, &url, Some(token));
+        if let Some(pin) = pin {
+            r = r.query(&[("pin", pin)]);
+        }
+        let s: Switched = Self::json(r).await?;
+        Ok(s.auth_token)
+    }
+
     /// Every Plex Media Server this account can use, owned or shared.
     pub async fn servers(&self, token: &str) -> Result<Vec<Resource>> {
         let url = format!("{}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1", self.clients_plex_tv);

@@ -166,6 +166,35 @@ async fn pin_flow_and_headers() {
     assert!(head.contains("accept: application/json"));
 }
 
+#[tokio::test]
+async fn home_users_and_switch() {
+    let (base, seen) = mock(|path| match path {
+        "/api/v2/home/users" => (
+            200,
+            r#"{"subscription":{},"users":[
+                {"id":1,"uuid":"aa11","title":"Sam","thumb":"https://plex.tv/users/aa11/avatar","admin":true,"protected":false,"restricted":false},
+                {"id":2,"uuid":"bb22","title":"Kids","admin":false,"protected":true}
+            ]}"#
+            .into(),
+        ),
+        "/api/v2/home/users/bb22/switch?pin=1234" => (201, r#"{"id":2,"uuid":"bb22","authToken":"kids-token"}"#.into()),
+        p if p.starts_with("/api/v2/home/users/bb22/switch") => (403, r#"{"errors":[{"code":1041}]}"#.into()),
+        _ => (500, "{}".into()),
+    });
+    let plex = Plex::new(ClientInfo::new("cid-1", "Den")).with_base_urls(&base, &base);
+    let users = plex.home_users("owner").await.unwrap();
+    assert_eq!(users.len(), 2);
+    assert!(users[0].admin && !users[0].protected);
+    assert_eq!(users[0].thumb.as_deref(), Some("https://plex.tv/users/aa11/avatar"));
+    assert!(users[1].protected && users[1].thumb.is_none());
+
+    assert_eq!(plex.switch_user("owner", "bb22", Some("1234")).await.unwrap(), "kids-token");
+    assert!(plex.switch_user("owner", "bb22", Some("0000")).await.is_err());
+    let all = seen.lock().unwrap().join("\n").to_ascii_lowercase();
+    assert!(all.contains("post /api/v2/home/users/bb22/switch?pin=1234"));
+    assert!(all.contains("x-plex-token: owner"));
+}
+
 fn conn() -> Connection {
     Connection { uri: String::new(), protocol: "http".into(), address: String::new(), port: 0, local: false, relay: false, ipv6: false }
 }

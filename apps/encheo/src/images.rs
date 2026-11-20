@@ -35,8 +35,17 @@ impl Loader {
     }
 }
 
+/// Nothing on screen needs more: a full-screen backdrop on a 4K TV is drawn from 1920 x 1080.
+const MAX_SIDE: u32 = 1920;
+
 pub fn decode(bytes: &[u8]) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let mut img = image::load_from_memory(bytes).ok()?;
+    // A picture that came at full size anyway (servers that don't resize): shrink it, so one
+    // photo can't take 16 MB or more of memory, plus as much again on the graphics card.
+    if img.width() > MAX_SIDE || img.height() > MAX_SIDE {
+        img = img.thumbnail(MAX_SIDE, MAX_SIDE);
+    }
+    let img = img.into_rgba8();
     let (w, h) = img.dimensions();
     Some(SharedPixelBuffer::clone_from_slice(img.as_raw(), w, h))
 }
@@ -102,6 +111,14 @@ mod tests {
 
     fn picture(side: u32) -> Image {
         Image::from_rgba8(SharedPixelBuffer::new(side, side))
+    }
+
+    #[test]
+    fn huge_pictures_are_shrunk() {
+        let mut png = Vec::new();
+        image::RgbaImage::new(4000, 2000).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let buf = decode(&png).unwrap();
+        assert_eq!((buf.width(), buf.height()), (1920, 960));
     }
 
     #[test]

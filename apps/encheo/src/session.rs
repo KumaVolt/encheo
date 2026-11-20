@@ -31,6 +31,16 @@ pub struct Session {
     /// The user chose to use Encheo without Plex.
     #[serde(default)]
     pub skip_plex: bool,
+    /// Plex Home: the account's own token while a profile is in use (`token` is then that
+    /// profile's). Lists and switches profiles.
+    #[serde(default)]
+    pub account_token: Option<String>,
+    /// Plex Home: its people, from the last check. Two or more: "Who's watching?" at start.
+    #[serde(default)]
+    pub home_users: Vec<encheo_plex::HomeUser>,
+    /// Plex Home: the profile in use (its uuid).
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default)]
     pub prefs: Prefs,
 }
@@ -45,6 +55,17 @@ pub struct Prefs {
     /// Desktop: the TV look, full screen (a computer connected to a TV). Android TV always has it.
     #[serde(default)]
     pub tv_mode: bool,
+    /// Smooth scrolling and transitions (Settings).
+    #[serde(default = "yes")]
+    pub animations: bool,
+    /// Android: HDR and surround sound sent to the TV as they are, where it takes them (Settings).
+    /// Experimental, so off until switched on: not yet tried on a real HDR TV.
+    #[serde(default)]
+    pub direct: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn one() -> f64 {
@@ -53,7 +74,7 @@ fn one() -> f64 {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { auto_skip: false, sub_scale: 1.0, tv_mode: false }
+        Self { auto_skip: false, sub_scale: 1.0, tv_mode: false, animations: true, direct: false }
     }
 }
 
@@ -170,9 +191,17 @@ impl Session {
     }
 
     /// Forget the account but keep the client id, so Plex doesn't list a new device next time.
+    /// The account's token, for Plex Home calls (whichever profile is in use).
+    pub fn account_token(&self) -> Option<String> {
+        self.account_token.clone().or_else(|| self.token.clone())
+    }
+
     pub fn sign_out(&mut self) {
         self.token = None;
         self.server = None;
+        self.account_token = None;
+        self.home_users.clear();
+        self.profile = None;
         self.save();
     }
 }

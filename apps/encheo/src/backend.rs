@@ -59,7 +59,7 @@ pub(crate) fn load_jf_servers() {
 type R<T> = Result<T, String>;
 
 /// Titled rows of items, for Home.
-pub(crate) type Rows = Vec<(String, Vec<Item>)>;
+pub(crate) type Rows = Vec<encheo_plex::Row>;
 
 /// A title's trailer: something to play, or (Jellyfin/Emby online trailers) a web address.
 #[derive(Clone, Debug)]
@@ -105,6 +105,30 @@ impl Backend {
             Backend::Jf(s) => s.discover(key, kind).await.map_err(|e| e.to_string()),
         };
         rows.unwrap_or_default()
+    }
+
+    /// Where a library's Recently Added row pages for more. Jellyfin's "latest" list groups
+    /// episodes by show and doesn't page; its row is fetched long instead.
+    pub fn recent_more(&self, key: &str) -> Option<String> {
+        match self {
+            Backend::Plex(_) => Some(format!("/library/sections/{key}/recentlyAdded")),
+            Backend::Jf(_) => None,
+        }
+    }
+
+    pub fn recent_size(&self) -> u32 {
+        match self {
+            Backend::Plex(_) => 24,
+            Backend::Jf(_) => 60,
+        }
+    }
+
+    /// More titles for a row, from `start`.
+    pub async fn row_page(&self, path: &str, start: u32, size: u32) -> R<Vec<Item>> {
+        match self {
+            Backend::Plex(s) => s.row_page(path, start, size).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.row_page(path, start, size).await.map_err(|e| e.to_string()),
+        }
     }
 
     pub async fn on_deck(&self) -> R<Vec<Item>> {

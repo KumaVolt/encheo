@@ -607,13 +607,15 @@ pub(crate) fn open_sources() {
 
 /// The Sources window's list: Plex, then Jellyfin/Emby servers, then file sources.
 pub(crate) fn fill_sources() {
+    let who = crate::profiles::current_name();
     let rows = with_state(|s| {
         let plex = match (&s.session.token, &s.session.server) {
             (Some(_), Some(server)) => SourceRow {
                 kind: "plex".into(),
                 title: server.name.clone().into(),
                 label: "Plex".into(),
-                detail: server.base_url.clone().into(),
+                detail: if who.is_empty() { server.base_url.clone() } else { format!("{who} · {}", server.base_url) }
+                .into(),
                 signed_in: true,
                 ..Default::default()
             },
@@ -694,6 +696,7 @@ pub(crate) fn remove_source(kind: &str, index: usize) {
                 s.session.save();
                 others
             });
+            ui().set_can_switch_profile(false);
             if !others {
                 ui().set_sources_open(false);
                 return begin_signin();

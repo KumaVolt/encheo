@@ -42,6 +42,10 @@ pub fn attach(window: &slint::Window) -> Option<i64> {
     let layer = CAMetalLayer::new();
     layer.setContentsScale(ui.contentScaleFactor());
     layer.setFrame(view.bounds());
+    // HDR: for HDR video mpv switches this layer to 10-bit PQ (BT.2100), but MoltenVK turns on
+    // extended dynamic range only on macOS; without it iOS squeezes the picture back into normal
+    // brightness. Normal video keeps an sRGB layer, where this changes nothing. (iOS 16+.)
+    layer.setWantsExtendedDynamicRangeContent(true);
     view.layer().addSublayer(&layer);
     parent.insertSubview_belowSubview(&view, &ui);
     // Let the video show through Slint's view (and the Metal layer Slint draws into).

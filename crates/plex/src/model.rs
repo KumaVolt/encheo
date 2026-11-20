@@ -27,6 +27,25 @@ pub struct Profile {
 }
 
 /// A device on the account from `/api/v2/resources`. Servers are the ones that provide "server".
+/// A person in the account's Plex Home ("Who's watching?"). Each has their own watched list,
+/// Continue Watching and watchlist.
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeUser {
+    pub uuid: String,
+    #[serde(default)]
+    pub title: String,
+    /// Avatar picture (a full plex.tv address).
+    #[serde(default)]
+    pub thumb: Option<String>,
+    /// The account owner.
+    #[serde(default)]
+    pub admin: bool,
+    /// Switching to this user needs their PIN.
+    #[serde(default)]
+    pub protected: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resource {
@@ -153,6 +172,12 @@ pub(crate) struct Hub {
     pub metadata: Vec<serde_json::Value>,
     #[serde(default, rename = "Directory")]
     pub directory: Vec<serde_json::Value>,
+    /// The hub's full list, which pages with X-Plex-Container-Start/Size.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Whether the full list has more than the hub carries.
+    #[serde(default, deserialize_with = "flag")]
+    pub more: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -226,6 +251,15 @@ pub struct SubtitleResult {
 pub(crate) struct SubtitleResults {
     #[serde(default, rename = "Stream")]
     pub streams: Vec<SubtitleResult>,
+}
+
+/// A row of titles for Home, and where to page for more of it.
+#[derive(Clone, Debug, Default)]
+pub struct Row {
+    pub title: String,
+    pub items: Vec<Item>,
+    /// A server path that pages (Plex: X-Plex-Container-Start/Size; Jellyfin: StartIndex/Limit).
+    pub more: Option<String>,
 }
 
 /// A page of a library or list.

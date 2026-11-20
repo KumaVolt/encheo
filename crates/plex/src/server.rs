@@ -68,7 +68,7 @@ impl Server {
     /// The rows Plex suggests for a library on its own Home: Recently Released, Top Rated,
     /// Start Watching, More in <genre>, Rediscover, … Leaves out what Encheo's Home already has
     /// (Continue Watching, Recently Added) and rows of fewer than four titles.
-    pub async fn discover(&self, library_key: &str) -> Result<Vec<(String, Vec<Item>)>> {
+    pub async fn discover(&self, library_key: &str) -> Result<Vec<crate::Row>> {
         let path = format!("/hubs/sections/{library_key}?count=20&excludeContinueWatching=1");
         let e: Envelope<crate::model::Hubs> = Plex::json(self.get(&path)).await?;
         Ok(e.container
@@ -77,10 +77,18 @@ impl Server {
             .filter(|h| !["inprogress", "recentlyadded", "recentlyviewed", "ondeck"].iter().any(|k| h.identifier.contains(k)))
             .map(|h| {
                 let title = h.title.clone();
-                (title, flatten_hubs(crate::model::Hubs { hub: vec![h] }))
+                let more = h.key.clone().filter(|k| h.more && k.starts_with("/library/"));
+                crate::Row { title, items: flatten_hubs(crate::model::Hubs { hub: vec![h] }), more }
             })
-            .filter(|(_, items)| items.len() >= 4)
+            .filter(|r| r.items.len() >= 4)
             .collect())
+    }
+
+    /// The next titles of a row (`Row::more`), from `start`.
+    pub async fn row_page(&self, path: &str, start: u32, size: u32) -> Result<Vec<Item>> {
+        use crate::ItemKind::*;
+        let items = self.page(path, start, size).await?.items;
+        Ok(items.into_iter().filter(|i| matches!(i.kind, Movie | Show | Episode | Artist | Album | Track)).collect())
     }
 
     /// Partly watched movies and next episodes, across all libraries.

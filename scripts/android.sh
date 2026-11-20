@@ -34,5 +34,5 @@ apk=apps/encheo/android/app/build/outputs/apk/debug/app-debug.apk
 echo "built $apk"
 if [ "$mode" = run ]; then
   adb install -r --no-incremental app/build/outputs/apk/debug/app-debug.apk
-  adb shell am start -n app.encheo/android.app.NativeActivity
+  adb shell am start -n app.encheo/.EncheoActivity
 fi

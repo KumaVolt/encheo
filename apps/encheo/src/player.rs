@@ -52,6 +52,23 @@ const PLATFORM_OPTIONS: &[(&str, &str)] = &[("vo", "gpu-next"), ("gpu-api", "vul
 #[cfg(not(target_os = "ios"))]
 const PLATFORM_OPTIONS: &[(&str, &str)] = &[];
 
+#[cfg(target_os = "android")]
+fn android_emulator() -> bool {
+    android_prop("ro.boot.qemu")
+}
+
+/// An Android system property set to 1.
+#[cfg(target_os = "android")]
+pub fn android_prop(name: &str) -> bool {
+    std::process::Command::new("getprop").arg(name).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+}
+
+/// An Android system property's value ("" when unset).
+#[cfg(target_os = "android")]
+pub fn android_prop_value(name: &str) -> String {
+    std::process::Command::new("getprop").arg(name).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
 /// File sources mpv can read through `encheo://<source>/<path>`, by source number.
 pub static STREAM_SOURCES: std::sync::Mutex<Vec<Option<std::sync::Arc<encheo_vfs::Source>>>> = std::sync::Mutex::new(Vec::new());
 
@@ -144,10 +161,24 @@ impl Player {
             if let Ok(path) = std::env::var("ENCHEO_MPV_LOG") {
                 let _ = init.set_option("log-file", path.as_str());
             }
+            // Android (no environment to set): `adb shell setprop debug.encheo.mpvlog 1` writes
+            // it to the app's folder (`adb shell run-as app.encheo cat files/mpv.log`).
+            #[cfg(target_os = "android")]
+            if android_prop("debug.encheo.mpvlog")
+                && let Some(dir) = crate::session::data_dir()
+            {
+                let _ = init.set_option("log-file", dir.join("mpv.log").to_string_lossy().as_ref());
+            }
             for (name, value) in OPTIONS.iter().chain(PLATFORM_OPTIONS) {
                 if let Err(e) = init.set_option(name, *value) {
                     eprintln!("mpv option {name}={value}: {e}");
                 }
+            }
+            // The Android emulator's stand-in hardware decoder never returns a frame and the
+            // player stalls; decode in software there. Real phones and TVs keep their hardware.
+            #[cfg(target_os = "android")]
+            if android_emulator() {
+                let _ = init.set_option("hwdec", "no");
             }
             Ok(())
         })?;
@@ -214,6 +245,18 @@ impl Player {
             eprintln!("mpv render: {e}");
         }
         unsafe { saved.restore(gl) };
+    }
+
+    /// The player itself (Android's video layer switches it between outputs).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn mpv(&self) -> &'static Mpv {
+        self.mpv
+    }
+
+    /// Formats sent to the TV or receiver undecoded ("ac3,eac3"; empty: decode everything).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn set_spdif(&self, formats: &str) {
+        let _ = self.mpv.set_property("audio-spdif", formats);
     }
 
     /// iOS: the Metal layer mpv draws into (must be set before the first video loads).

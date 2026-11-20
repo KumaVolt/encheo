@@ -37,6 +37,7 @@ jobs:
           mkdir -p dist/encheo
           cp target/release/encheo dist/encheo/
           cp README.md LICENSE dist/encheo/
+          cp apps/encheo/notices.txt dist/encheo/THIRD-PARTY-NOTICES.txt
           tar -C dist -czf encheo-linux-x86_64.tar.gz encheo
       - uses: actions/upload-artifact@v4
         with:
@@ -80,7 +81,10 @@ jobs:
         run: |
           # Community Windows builds of mpv; the dev package has libmpv-2.dll and headers.
           gh release download --repo shinchiro/mpv-winbuild-cmake --pattern "mpv-dev-x86_64-2*.7z" --dir mpv-dl
-          7z x (Get-ChildItem mpv-dl\*.7z | Select-Object -First 1).FullName -ompv | Out-Null
+          $archive = Get-ChildItem mpv-dl\*.7z | Select-Object -First 1
+          7z x $archive.FullName -ompv | Out-Null
+          # Which build ships, for its licence (GPL) and source: see THIRD-PARTY-NOTICES.md.
+          "libmpv-2.dll is from $($archive.Name), https://github.com/shinchiro/mpv-winbuild-cmake/releases" | Set-Content mpv\libmpv-build.txt
           # MSVC needs an import library; build one from the DLL's exports.
           $exports = dumpbin /exports mpv\libmpv-2.dll | Select-String '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(mpv_\w+)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
           "LIBRARY libmpv-2.dll`nEXPORTS`n" + ($exports -join "`n") | Set-Content mpv\mpv.def
@@ -93,7 +97,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist\encheo | Out-Null
-          Copy-Item target\release\encheo.exe, mpv\libmpv-2.dll, README.md, LICENSE dist\encheo\
+          Copy-Item target\release\encheo.exe, mpv\libmpv-2.dll, mpv\libmpv-build.txt, README.md, LICENSE dist\encheo\
+          Copy-Item apps\encheo\notices.txt dist\encheo\THIRD-PARTY-NOTICES.txt
           Compress-Archive dist\encheo encheo-windows-x86_64.zip
       - name: Installer
         shell: pwsh
@@ -132,6 +137,7 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp packaging/macos/Encheo.icns "$APP/Contents/Resources/"
           cp target/release/encheo "$APP/Contents/MacOS/Encheo"
+          cp apps/encheo/notices.txt "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

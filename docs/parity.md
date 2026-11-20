@@ -9,7 +9,7 @@ macOS and Android** (phones and Android TV included), and where Encheo stands.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Plex (PIN sign-in, servers, libraries, watchlist) | ✓ | Direct play. Managed-user switching left out on purpose: the signed-in user is the viewer |
+| Plex (PIN sign-in, servers, libraries, watchlist) | ✓ | Direct play. Plex Home profiles with PIN ("Who's watching?") |
 | Jellyfin, Emby | ✓ | One client for both; resume points, watched state, intro/credits (Jellyfin media segments) |
 | Local folders | ✓ | Desktop. Android needs storage permission handling (→) |
 | SMB, WebDAV | ✓ | Pure-Rust SMB2/3; WebDAV played directly over HTTP |
@@ -37,7 +37,7 @@ macOS and Android** (phones and Android TV included), and where Encheo stands.
 | Favourites | ✓ | Kept on the device; a row on the home screen |
 | Reorderable home sections, collections, playlists | → | |
 | Up Next, watched state, resume points | ✓ | Servers keep their own; files tracked locally |
-| Extras (trailers, featurettes) | → | |
+| Extras (trailers, featurettes) | ◐ | Trailers from the server, else YouTube (AniList for anime), played in the app. Featurettes (→) |
 | Search | ✓ | Media servers and file sources (file lists collected on the first search) |
 | Downloads for offline playback | → | Matters most on Android phones |
 
@@ -48,9 +48,9 @@ All decoding and rendering is libmpv, so format coverage is FFmpeg's.
 | Feature | Status | Notes |
 |---|---|---|
 | Containers and codecs (MKV, MP4, TS, AVI, WMV…; H.264, HEVC, AV1, VP9, VC-1…; AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC…) | ✓ | Hardware decoding on each OS |
-| Audio passthrough to a receiver | → | |
+| Audio passthrough to a receiver | ◐ | Experimental on Android (Settings); desktop (→) |
 | Disc images (ISO, BDMV, VIDEO_TS) | → | Main title. ✗ Disc menus |
-| HDR10, HLG; Dolby Vision as HDR10 / tone-mapped | ◐ | Detected and labelled; tone-mapped on desktop |
+| HDR10, HLG; Dolby Vision as HDR10 / tone-mapped | ◐ | Detected and labelled; tone-mapped on desktop; HDR output on iOS and (experimental) Android |
 | Subtitles: SRT, ASS/SSA, PGS, VobSub | ✓ | Rendered by mpv (libass); external server subtitles loaded |
 | Subtitle language detection for untagged tracks | ✓ | From the subtitle text, offline |
 | Audio/subtitle choice remembered per show (by language) | ✓ | Also saved to the show's Plex settings |
@@ -78,7 +78,7 @@ All decoding and rendering is libmpv, so format coverage is FFmpeg's.
 | macOS, Windows, Linux, Android phone, Android TV | ◐ | All build in CI; macOS and Android tested; Windows and Linux untested |
 | iPhone, iPad | ◐ | Experimental: unsigned .ipa for sideloading; video via mpv on Metal (MoltenVK), tested in the simulator only. App Store needs libsmbclient dropped and the LGPL relinking terms met |
 | Apple TV | ✗ | Slint doesn't support tvOS |
-| Profiles with passcode | → | |
+| Profiles with passcode | ◐ | Plex Home profiles with PIN; Jellyfin/Emby users (→) |
 | Trakt scrobbling and sync | → | |
 | Sync of settings, history, favourites, home layout and sources across devices | → | Optional; source passwords end-to-end encrypted |
 | Credentials in the OS keychain | → | Stored in a file only the user can read for now |

@@ -3,7 +3,9 @@
     python3 demo_server.py <port> <artwork folder>
 
 Answers the endpoints the app uses with Plex-shaped JSON; artwork comes from make_art.py's
-folder. Nothing plays: there are no media files.
+folder. There are no media files: films, episodes and trailers all play Big Buck Bunny
+(Blender Foundation, CC BY 3.0), streamed from the Internet Archive's copy. Songs play a
+generated tone.
 """
 
 import io
@@ -19,6 +21,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 import library
 
 ART = Path(".")
+# Every film and episode: Big Buck Bunny (720p, 62 MB), from the Internet Archive.
+DEMO_VIDEO = "https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4"
 
 
 def container(**fields):
@@ -95,13 +99,58 @@ def section_hubs(section):
         {"hubIdentifier": f"{kind}.moreingenre.{section}", "title": f"More in {genre}", "Metadata": in_genre or found},
     ]
 
+# Plex Home people, for "Who's watching?" (the app talks to this server as plex.tv when started
+# with ENCHEO_PLEX_TV / debug.encheo.plextv). Kids has the PIN 1234.
+HOME_USERS = [
+    {"id": 1, "uuid": "demo-alex", "title": "Alex", "admin": True, "protected": False},
+    {"id": 2, "uuid": "demo-sam", "title": "Sam", "admin": False, "protected": False},
+    {"id": 3, "uuid": "demo-kids", "title": "Kids", "admin": False, "protected": True, "restricted": True},
+]
+HOME_PINS = {"demo-kids": "1234"}
+
+
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        url = urlparse(self.path)
+        query = parse_qs(url.query)
+        parts = [p for p in url.path.split("/") if p]
+        if parts[:3] == ["api", "v2", "home"] and len(parts) == 6 and parts[5] == "switch":
+            uuid = parts[4]
+            user = next((u for u in HOME_USERS if u["uuid"] == uuid), None)
+            if user is None:
+                return self.send_error(404)
+            if uuid in HOME_PINS and query.get("pin", [""])[0] != HOME_PINS[uuid]:
+                return self.json({"errors": [{"code": 1041, "message": "Invalid PIN"}]}, status=403)
+            return self.json({**user, "authToken": "demo-" + uuid}, status=201)
+        if url.path.startswith("/:/"):
+            return self.json(container())
+        self.send_error(404)
+
     def do_GET(self):
         url = urlparse(self.path)
         query = parse_qs(url.query)
         parts = [p for p in url.path.split("/") if p]
         start = int(self.headers.get("X-Plex-Container-Start", 0))
         size = int(self.headers.get("X-Plex-Container-Size", 10_000))
+
+        # plex.tv stand-in: the Home's people, the account, and this server as its only server.
+        if url.path == "/api/v2/home/users":
+            host = self.headers.get("Host", "127.0.0.1")
+            users = [dict(u) for u in HOME_USERS]
+            users[0]["thumb"] = f"http://{host}/photo/:/transcode?url=/art/album-3011.jpg"
+            return self.json({"subscription": {}, "users": users})
+        if url.path == "/api/v2/user":
+            return self.json({"id": 1, "uuid": "demo-alex", "username": "alex", "title": "Alex", "profile": {"defaultSubtitleLanguage": "en"}})
+        if url.path == "/api/v2/resources":
+            host = self.headers.get("Host", "127.0.0.1")
+            address, _, port = host.partition(":")
+            return self.json([{
+                "name": "Demo", "clientIdentifier": "demo-server", "provides": "server", "owned": True,
+                "accessToken": self.headers.get("X-Plex-Token", "demo"),
+                "connections": [{"uri": f"http://{host}", "protocol": "http", "address": address, "port": int(port or 80), "local": True, "relay": False, "IPv6": False}],
+            }])
+        if url.path == "/identity":
+            return self.json(container(machineIdentifier="demo-server"))
 
         if url.path == "/photo/:/transcode":
             name = unquote(query.get("url", [""])[0]).split("/")[-1]
@@ -155,6 +204,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(container(size=1, Lyrics=[library.lyrics(parts[2].removeprefix("lyrics-"))]))
         if parts[:2] == ["library", "parts"] and url.path.endswith(".mp3"):
             return self.audio()
+        if parts[:2] == ["library", "parts"]:
+            self.send_response(302)
+            self.send_header("Location", DEMO_VIDEO)
+            self.send_header("Content-Length", "0")
+            return self.end_headers()
         self.send_error(404)
 
     def audio(self):
@@ -167,9 +221,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def json(self, body):
+    def json(self, body, status=200):
         data = json.dumps(body).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
