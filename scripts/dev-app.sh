@@ -5,7 +5,8 @@ set -e
 cd "$(dirname "$0")/.."
 cargo build -p encheo
 APP=target/Encheo.app
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp packaging/macos/Encheo.icns "$APP/Contents/Resources/"
 # Replace, don't overwrite: macOS caches code signatures per file and kills a binary whose
 # bytes changed under an existing signature ("Code Signature Invalid").
 rm -f "$APP/Contents/MacOS/Encheo"
@@ -19,6 +20,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>app.encheo.dev</string>
   <key>CFBundleExecutable</key><string>Encheo</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>Encheo</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

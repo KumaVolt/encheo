@@ -1,7 +1,27 @@
 Preview of Encheo, an open-source media player for Windows, Linux, macOS, Android (phones and
 Android TV) and, experimentally, iPhone and iPad. Early software: expect rough edges.
 
-## New in 0.4.1
+## New in 0.5.0
+
+- **Synced lyrics:** the microphone button in Now Playing shows the words, with the line being
+  sung lit up as the song plays. Tap a line to jump there. Lyrics come from your Plex or
+  Jellyfin server, else from LRCLIB (only the song's title, artist, album and length are sent)
+- **Now Playing:** a full-screen music view with a large cover, a seek bar and Up Next. Open it
+  from the music bar's cover or title
+- **Music:** Artists, Albums, Songs and Playlists tabs; playlists play or shuffle
+- **Collections** from Plex and Jellyfin get a row on Home and a page of their own
+- **TV Home, Netflix style:** a full-screen banner shows the title the remote is on, with wide
+  cards in the rows. On every device the banner folds away as you scroll, and Home has more rows
+  (including Plex's own suggestions) to browse
+- **Watched marks:** a tick on watched films and episodes, and on seasons you've finished
+- **Anime trailers** from AniList when the server has none, and trailers that kept loading forever
+  now play
+- **Android:** music keeps playing with the screen off, with controls on the lock screen and in
+  the notification. Built with Gradle now
+- **New icon** on every platform
+- **Less memory:** the picture cache has a size limit
+
+## In 0.4.1
 
 - **Windows installer:** `encheo-windows-x86_64-setup.exe` installs Encheo with a Start menu entry
   and an uninstaller. The zip is still there as a portable version

@@ -275,6 +275,12 @@ impl Player {
         let _ = self.mpv.command("playlist-prev", &[]);
     }
 
+    /// Music repeat: 0 off, 1 the whole playlist, 2 the current file.
+    pub fn set_repeat(&self, mode: u8) {
+        let _ = self.mpv.set_property("loop-playlist", if mode == 1 { "inf" } else { "no" });
+        let _ = self.mpv.set_property("loop-file", if mode == 2 { "inf" } else { "no" });
+    }
+
     pub fn stop(&self) {
         let _ = self.mpv.command("stop", &[]);
     }
@@ -293,12 +299,14 @@ impl Player {
 
     pub fn status(&self) -> Status {
         let mpv = self.mpv;
+        let idle = mpv.get_property::<bool>("idle-active").unwrap_or(false);
         Status {
+            idle,
             position: mpv.get_property::<f64>("time-pos").unwrap_or(0.0),
             duration: mpv.get_property::<f64>("duration").unwrap_or(0.0),
             paused: mpv.get_property::<bool>("pause").unwrap_or(false),
             buffering: mpv.get_property::<bool>("paused-for-cache").unwrap_or(false)
-                || mpv.get_property::<bool>("idle-active").unwrap_or(false)
+                || idle
                 || mpv.get_property::<f64>("time-pos").is_err(),
             ended: mpv.get_property::<bool>("eof-reached").unwrap_or(false),
         }
@@ -549,6 +557,9 @@ pub struct Status {
     pub paused: bool,
     pub buffering: bool,
     pub ended: bool,
+    /// No file open: nothing loaded yet, or the file couldn't be opened (with keep-open, a file
+    /// that played to the end stays open).
+    pub idle: bool,
 }
 
 /// `1:02:03` / `42:07`.

@@ -265,3 +265,24 @@ fn subtitle_results_parse() {
     assert_eq!(e.container.streams[1].score, "14296");
     assert_eq!(e.container.streams[0].provider_title.as_deref(), Some("OpenSubtitles"));
 }
+
+#[test]
+fn lyrics_synced_and_plain() {
+    let synced = r#"{"MediaContainer":{"size":1,"Lyrics":[{"timed":true,"by":"Lyrics © Someone",
+        "Line":[{"startOffset":4170,"endOffset":7100,"Span":[{"text":"I woke up "},{"text":"today"}]},
+                {"startOffset":7100,"Line":[]},
+                {"startOffset":10010,"Span":[{"text":"Second"}]}]}]}}"#;
+    let e: Envelope<crate::model::LyricsContainer> = serde_json::from_str(synced).unwrap();
+    let l = e.container.lyrics.into_iter().next().unwrap().into_lyrics();
+    assert!(l.synced);
+    assert_eq!(l.credit.as_deref(), Some("Lyrics © Someone"));
+    assert_eq!(l.lines.len(), 3);
+    assert_eq!(l.lines[0], LyricLine { start: 4.17, text: "I woke up today".into() });
+    assert_eq!(l.lines[1].text, "", "a gap between verses stays as an empty line");
+
+    let plain = r#"{"MediaContainer":{"Lyrics":[{"timed":"0","Line":[{"Span":[{"text":"Just words"}]}]}]}}"#;
+    let e: Envelope<crate::model::LyricsContainer> = serde_json::from_str(plain).unwrap();
+    let l = e.container.lyrics.into_iter().next().unwrap().into_lyrics();
+    assert!(!l.synced);
+    assert_eq!(l.lines[0], LyricLine { start: 0.0, text: "Just words".into() });
+}

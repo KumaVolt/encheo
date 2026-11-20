@@ -275,6 +275,10 @@ def build():
                     "index": t + 1, "parentIndex": 1, "parentRatingKey": bkey, "parentTitle": album,
                     "parentThumb": f"/art/album-{bkey}.jpg", "grandparentRatingKey": akey, "grandparentTitle": artist,
                     "thumb": f"/art/album-{bkey}.jpg", "duration": seconds * 1000,
+                    # No audio behind it, but the app needs a file to queue the track.
+                    "Media": [{"id": 1, "Part": [{"id": 1, "key": f"/library/parts/{tkey}/file.mp3",
+                                                  "Stream": [{"id": 9, "streamType": 4, "codec": "lrc", "format": "lrc",
+                                                              "timed": "1", "key": f"/library/streams/lyrics-{tkey}"}]}]}],
                 }
 
     return items, sections
@@ -282,11 +286,42 @@ def build():
 
 ITEMS, SECTION_ITEMS = build()
 
+# How many episodes of each season and show have been watched, as Plex reports it.
+for _parent in [i for i in ITEMS.values() if i["type"] in ("season", "show")]:
+    _field = "parentRatingKey" if _parent["type"] == "season" else "grandparentRatingKey"
+    _parent["viewedLeafCount"] = sum(1 for e in ITEMS.values()
+                                     if e["type"] == "episode" and e.get(_field) == _parent["ratingKey"] and e.get("viewCount"))
+
 SECTIONS = [
     {"key": "1", "title": "Movies", "type": "movie"},
     {"key": "2", "title": "TV Shows", "type": "show"},
     {"key": "3", "title": "Music", "type": "artist"},
 ]
+
+
+# Collections in the Movies library: (key, title, the films in it). The poster is the first film's.
+COLLECTION_DEFS = [
+    ("901", "Coastal Stories", ["101", "108", "112", "114"]),
+    ("902", "Sci-Fi Nights", ["102", "107", "111"]),
+]
+COLLECTIONS = {
+    key: {
+        "ratingKey": key, "key": f"/library/collections/{key}/children", "type": "collection", "subtype": "movie",
+        "title": title, "thumb": ITEMS[films[0]]["thumb"], "childCount": len(films), "librarySectionID": 1,
+    }
+    for key, title, films in COLLECTION_DEFS
+}
+COLLECTION_ITEMS = {key: films for key, _, films in COLLECTION_DEFS}
+
+# A music playlist: every third song. Its picture is Plex's "composite" of its albums.
+_TRACKS = sorted((i for i in ITEMS.values() if i["type"] == "track"), key=lambda t: t["ratingKey"])
+PLAYLIST_TRACKS = [t["ratingKey"] for t in _TRACKS[::3]]
+PLAYLISTS = [{
+    "ratingKey": "951", "key": "/playlists/951/items", "type": "playlist", "playlistType": "audio",
+    "title": "Late Night Drive", "composite": ITEMS[PLAYLIST_TRACKS[0]]["thumb"], "leafCount": len(PLAYLIST_TRACKS),
+    "summary": "Quiet songs for the road home.",
+}]
+MUSIC_TYPES = {"8": "artist", "9": "album", "10": "track"}
 
 
 def children(key):
@@ -328,3 +363,21 @@ def images():
         for r in i.get("Role", []) + i.get("Director", []) + i.get("Writer", []):
             out[r["thumb"]] = "person"
     return out
+
+
+# Made-up words for the demo songs, a line every few seconds (the demo tone lasts 40).
+LYRIC_LINES = [
+    "Streetlights hum a quiet tune", "", "We kept the radio on all night",
+    "Counting cars beneath the moon", "Every window full of light", "",
+    "Hold on, hold on", "The city's singing back to us", "Hold on, hold on",
+    "Till the morning comes", "", "Somewhere a door is left ajar",
+    "Somewhere a song is playing", "And we were never very far",
+]
+
+
+def lyrics(track_key):
+    """Plex's lyrics JSON for a demo track: synced, except every fifth track, which is plain."""
+    plain = int(track_key[-2:]) % 5 == 0
+    lines = [{"startOffset": 1500 + i * 2800, "Span": [{"text": t}]} if not plain else {"Span": [{"text": t}]}
+             for i, t in enumerate(LYRIC_LINES)]
+    return {"timed": not plain, "by": "Demo lyrics written for Encheo", "Line": lines}

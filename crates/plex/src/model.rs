@@ -144,6 +144,11 @@ pub(crate) struct Hubs {
 /// and one odd entry must not fail the whole search.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct Hub {
+    #[serde(default)]
+    pub title: String,
+    /// What the hub is, e.g. `movie.recentlyreleased.1`, `tv.moreingenre.2`.
+    #[serde(default, rename = "hubIdentifier")]
+    pub identifier: String,
     #[serde(default, rename = "Metadata")]
     pub metadata: Vec<serde_json::Value>,
     #[serde(default, rename = "Directory")]
@@ -243,6 +248,7 @@ pub enum ItemKind {
     Artist,
     Album,
     Track,
+    Playlist,
     /// Not from Plex: a folder in a file source.
     Folder,
     #[default]
@@ -278,6 +284,9 @@ pub struct Item {
     /// Poster. A server path; turn it into a URL with [`Server::image_url`](crate::Server::image_url).
     #[serde(default)]
     pub thumb: Option<String>,
+    /// Playlists: a picture Plex makes from their albums' covers.
+    #[serde(default)]
+    pub composite: Option<String>,
     /// Backdrop.
     #[serde(default)]
     pub art: Option<String>,
@@ -335,6 +344,9 @@ pub struct Item {
 
     #[serde(default, rename = "Genre")]
     pub genres: Vec<Tag>,
+    /// Where it was made (full metadata only).
+    #[serde(default, rename = "Country")]
+    pub countries: Vec<Tag>,
     #[serde(default, rename = "Director")]
     pub directors: Vec<Tag>,
     #[serde(default, rename = "Writer")]
@@ -559,5 +571,80 @@ impl PlayState {
             PlayState::Paused => "paused",
             PlayState::Stopped => "stopped",
         }
+    }
+}
+
+/// A song's words. Shared by every source (Plex, Jellyfin, LRCLIB).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lyrics {
+    pub lines: Vec<LyricLine>,
+    /// Each line carries the moment it's sung. Otherwise the words are just text.
+    pub synced: bool,
+    /// Who wrote or licensed the words ("Lyrics © …"), when the source says.
+    pub credit: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LyricLine {
+    /// Seconds into the song. 0 for every line when not synced.
+    pub start: f64,
+    pub text: String,
+}
+
+/// Plex's lyrics, as JSON: `MediaContainer.Lyrics[].Line[]`, each line with a `startOffset` in
+/// milliseconds and its words in `Span`s.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct LyricsContainer {
+    #[serde(default, rename = "Lyrics")]
+    pub lyrics: Vec<RawLyrics>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct RawLyrics {
+    #[serde(default, deserialize_with = "flag")]
+    timed: bool,
+    #[serde(default)]
+    by: Option<String>,
+    #[serde(default, rename = "Line")]
+    lines: Vec<RawLine>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLine {
+    #[serde(default)]
+    start_offset: Option<f64>,
+    #[serde(default, rename = "Span")]
+    spans: Vec<RawSpan>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSpan {
+    #[serde(default)]
+    text: String,
+}
+
+/// Plex writes booleans as `true`, `1` or `"1"` depending on the endpoint.
+fn flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::Number(n) => n.as_f64() != Some(0.0),
+        serde_json::Value::String(s) => matches!(s.as_str(), "1" | "true"),
+        _ => false,
+    })
+}
+
+impl RawLyrics {
+    pub(crate) fn into_lyrics(self) -> Lyrics {
+        let synced = self.timed && self.lines.iter().any(|l| l.start_offset.is_some());
+        let lines = self
+            .lines
+            .into_iter()
+            .map(|l| LyricLine {
+                start: if synced { l.start_offset.unwrap_or(0.0) / 1000.0 } else { 0.0 },
+                text: l.spans.into_iter().map(|s| s.text).collect::<String>().trim().to_string(),
+            })
+            .collect::<Vec<_>>();
+        Lyrics { lines, synced, credit: self.by.filter(|b| !b.trim().is_empty()) }
     }
 }

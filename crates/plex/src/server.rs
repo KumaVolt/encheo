@@ -65,6 +65,24 @@ impl Server {
         Ok(self.page(&format!("/library/sections/{library_key}/recentlyAdded"), 0, size).await?.items)
     }
 
+    /// The rows Plex suggests for a library on its own Home: Recently Released, Top Rated,
+    /// Start Watching, More in <genre>, Rediscover, … Leaves out what Encheo's Home already has
+    /// (Continue Watching, Recently Added) and rows of fewer than four titles.
+    pub async fn discover(&self, library_key: &str) -> Result<Vec<(String, Vec<Item>)>> {
+        let path = format!("/hubs/sections/{library_key}?count=20&excludeContinueWatching=1");
+        let e: Envelope<crate::model::Hubs> = Plex::json(self.get(&path)).await?;
+        Ok(e.container
+            .hub
+            .into_iter()
+            .filter(|h| !["inprogress", "recentlyadded", "recentlyviewed", "ondeck"].iter().any(|k| h.identifier.contains(k)))
+            .map(|h| {
+                let title = h.title.clone();
+                (title, flatten_hubs(crate::model::Hubs { hub: vec![h] }))
+            })
+            .filter(|(_, items)| items.len() >= 4)
+            .collect())
+    }
+
     /// Partly watched movies and next episodes, across all libraries.
     pub async fn on_deck(&self) -> Result<Vec<Item>> {
         self.list("/library/onDeck").await
@@ -73,6 +91,35 @@ impl Server {
     /// Full details of one item, including media versions and intro/credits markers.
     pub async fn metadata(&self, rating_key: &str) -> Result<Option<Item>> {
         Ok(self.list(&format!("/library/metadata/{rating_key}?includeMarkers=1")).await?.into_iter().next())
+    }
+
+    /// A track's words, from the lyrics Plex found for it (LyricFind, or an .lrc/.txt file next
+    /// to the song). Prefers synced lyrics when the track has both. None when it has none.
+    pub async fn lyrics(&self, rating_key: &str) -> Result<Option<crate::Lyrics>> {
+        let Some(item) = self.metadata(rating_key).await? else { return Ok(None) };
+        let keys: Vec<String> = item
+            .media
+            .iter()
+            .flat_map(|m| &m.parts)
+            .flat_map(|p| &p.streams)
+            .filter(|s| s.stream_type == 4)
+            .filter_map(|s| s.key.clone())
+            .collect();
+        let mut plain = None;
+        for key in keys {
+            let e: Envelope<crate::model::LyricsContainer> = Plex::json(self.get(&key)).await?;
+            for raw in e.container.lyrics {
+                let lyrics = raw.into_lyrics();
+                if lyrics.lines.iter().all(|l| l.text.is_empty()) {
+                    continue;
+                }
+                if lyrics.synced {
+                    return Ok(Some(lyrics));
+                }
+                plain.get_or_insert(lyrics);
+            }
+        }
+        Ok(plain)
     }
 
     /// "More like this": titles Plex relates to this one.
@@ -94,6 +141,34 @@ impl Server {
     /// trailers Plex finds online.
     pub async fn extras(&self, rating_key: &str) -> Result<Vec<Item>> {
         self.list(&format!("/library/metadata/{rating_key}/extras")).await
+    }
+
+    /// A music library by tab: 0 artists, 1 albums, 2 songs, 3 playlists (the server's music
+    /// playlists; Plex keeps those outside libraries).
+    pub async fn music_items(&self, library_key: &str, tab: i32, start: u32, size: u32) -> Result<Page> {
+        let path = match tab {
+            1 => format!("/library/sections/{library_key}/all?type=9&sort=titleSort"),
+            2 => format!("/library/sections/{library_key}/all?type=10&sort=titleSort"),
+            3 => "/playlists?playlistType=audio".to_string(),
+            _ => format!("/library/sections/{library_key}/all?type=8&sort=titleSort"),
+        };
+        self.page(&path, start, size).await
+    }
+
+    /// The songs in a playlist, in its order.
+    pub async fn playlist_items(&self, rating_key: &str) -> Result<Vec<Item>> {
+        self.list(&format!("/playlists/{rating_key}/items")).await
+    }
+
+    /// A library's collections (Plex keeps them per library; everyone who can see the library
+    /// sees them).
+    pub async fn collections(&self, library_key: &str) -> Result<Vec<Item>> {
+        self.list(&format!("/library/sections/{library_key}/collections")).await
+    }
+
+    /// The titles in a collection.
+    pub async fn collection_items(&self, rating_key: &str) -> Result<Vec<Item>> {
+        self.list(&format!("/library/collections/{rating_key}/children")).await
     }
 
     /// Seasons of a show, episodes of a season, albums of an artist, or tracks of an album.
@@ -120,7 +195,9 @@ impl Server {
         if part.key.starts_with("http") {
             return part.key.clone();
         }
-        format!("{}{}?X-Plex-Token={}", self.base, part.key, self.token)
+        // Plex's online trailers come with their own query (`video.mp4?fmt=4&bitrate=5000`).
+        let sep = if part.key.contains('?') { '&' } else { '?' };
+        format!("{}{}{sep}X-Plex-Token={}", self.base, part.key, self.token)
     }
 
     /// URL of an external subtitle file Plex knows about (a `.srt` next to the video).

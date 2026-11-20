@@ -1,6 +1,6 @@
 #!/bin/sh
 # Fetch prebuilt libmpv for Android (media-kit/libmpv-android-video-build, "full" variant: all
-# codecs) into apps/encheo/android-libs/<abi>/, where cargo-apk packs it into the APK.
+# codecs) into apps/encheo/android-libs/<abi>/, where scripts/android.sh copies it into the Gradle project.
 set -e
 cd "$(dirname "$0")/.."
 VERSION="${LIBMPV_ANDROID_VERSION:-v1.1.11}"

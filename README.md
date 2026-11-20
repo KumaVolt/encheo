@@ -69,12 +69,15 @@ an import library (see `.github/workflows/build.yml`), set `MPV_LIB_DIR` to that
 **Android**
 
 ```sh
-cargo install cargo-apk
+cargo install cargo-ndk
 rustup target add aarch64-linux-android
 scripts/android.sh run
 ```
 
-Needs the Android SDK and NDK (`ANDROID_HOME`, `ANDROID_NDK_ROOT`).
+Needs JDK 17 and the Android SDK and NDK (`ANDROID_HOME`, `ANDROID_NDK_HOME`). The Rust app is
+packaged by a small Gradle project in `apps/encheo/android`, which also holds the Java music
+service (lock-screen controls, playing with the screen off). `scripts/android.sh release` makes
+a release APK and a Play Store bundle (`.aab`).
 
 Every push is built for all four platforms in GitHub Actions; the builds are attached to each run.
 

@@ -1,0 +1,5 @@
+.gradle/
+build/
+local.properties
+# Built by scripts/android.sh: libencheo.so (cargo-ndk) and libmpv.so (scripts/android-libs.sh).
+app/src/main/jniLibs/

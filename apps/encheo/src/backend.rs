@@ -58,6 +58,9 @@ pub(crate) fn load_jf_servers() {
 
 type R<T> = Result<T, String>;
 
+/// Titled rows of items, for Home.
+pub(crate) type Rows = Vec<(String, Vec<Item>)>;
+
 /// A title's trailer: something to play, or (Jellyfin/Emby online trailers) a web address.
 #[derive(Clone, Debug)]
 pub(crate) enum Trailer {
@@ -95,6 +98,15 @@ impl Backend {
         }
     }
 
+    /// Suggested rows for a film or TV library's Home (see the servers' `discover`).
+    pub async fn discover(&self, key: &str, kind: &str) -> Rows {
+        let rows = match self {
+            Backend::Plex(s) => s.discover(key).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.discover(key, kind).await.map_err(|e| e.to_string()),
+        };
+        rows.unwrap_or_default()
+    }
+
     pub async fn on_deck(&self) -> R<Vec<Item>> {
         match self {
             Backend::Plex(s) => s.on_deck().await.map_err(|e| e.to_string()),
@@ -109,10 +121,64 @@ impl Backend {
         }
     }
 
+    /// A track's words: the server's, unless it has none synced and LRCLIB does.
+    pub async fn lyrics(&self, track: &Item) -> Option<encheo_plex::Lyrics> {
+        let own = match self {
+            Backend::Plex(s) => s.lyrics(&track.rating_key).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.lyrics(&track.rating_key).await.map_err(|e| e.to_string()),
+        };
+        let own = own.unwrap_or_else(|e| {
+            eprintln!("lyrics: {e}");
+            None
+        });
+        if own.as_ref().is_some_and(|l| l.synced) {
+            return own;
+        }
+        match lyrics::lrclib(track).await {
+            Some(l) if l.synced || own.is_none() => Some(l),
+            _ => own,
+        }
+    }
+
     pub async fn children(&self, id: &str) -> R<Vec<Item>> {
         match self {
             Backend::Plex(s) => s.children(id).await.map_err(|e| e.to_string()),
             Backend::Jf(s) => s.children(id).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    pub async fn music_items(&self, key: &str, tab: i32, start: u32, size: u32) -> R<encheo_plex::Page> {
+        match self {
+            Backend::Plex(s) => s.music_items(key, tab, start, size).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.music_items(key, tab, start, size).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    pub async fn playlist_items(&self, id: &str) -> R<Vec<Item>> {
+        match self {
+            Backend::Plex(s) => s.playlist_items(id).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.playlist_items(id).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    /// Collections: Plex's from each of these libraries, Jellyfin's for the whole server.
+    pub async fn collections(&self, libraries: &[encheo_plex::Library]) -> Vec<Item> {
+        match self {
+            Backend::Plex(s) => {
+                let mut all = Vec::new();
+                for l in libraries {
+                    all.extend(s.collections(&l.key).await.unwrap_or_default());
+                }
+                all
+            }
+            Backend::Jf(s) => s.collections().await.unwrap_or_default(),
+        }
+    }
+
+    pub async fn collection_items(&self, id: &str) -> R<Vec<Item>> {
+        match self {
+            Backend::Plex(s) => s.collection_items(id).await.map_err(|e| e.to_string()),
+            Backend::Jf(s) => s.collection_items(id).await.map_err(|e| e.to_string()),
         }
     }
 

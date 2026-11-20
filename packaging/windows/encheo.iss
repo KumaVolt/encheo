@@ -29,6 +29,7 @@ OutputDir=.
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=encheo.ico
 ; Encheo may be running when updating over an older version.
 CloseApplications=yes
 

@@ -21,6 +21,7 @@ rm -rf "$app" && mkdir -p "$app"
 cp "target/$target/$profile/encheo" "$app/encheo"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 sed "s/VERSION/$version/g" apps/encheo/ios/Info.plist > "$app/Info.plist"
+cp apps/encheo/ios/icons/*.png "$app/"
 codesign --force --sign - "$app" >/dev/null
 
 if [ "$mode" = ipa ]; then

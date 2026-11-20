@@ -3,10 +3,14 @@
 //! Threads: the UI thread owns all Slint objects and the app state (thread-locals below). Network
 //! and decoding run on a tokio runtime; results come back through `on_ui`.
 
+#[cfg(target_os = "android")]
+mod android_media;
+mod anilist;
 mod backend;
 mod favourites;
 mod images;
 mod langs;
+mod lyrics;
 mod progress;
 mod shares;
 mod player;
@@ -47,9 +51,15 @@ struct Models {
     grid: Rc<VecModel<Poster>>,
     albums: Rc<VecModel<Poster>>,
     tracks: Rc<VecModel<Track>>,
+    /// What's queued, for Now Playing.
+    queue: Rc<VecModel<Track>>,
+    /// A music library's Songs tab.
+    songs: Rc<VecModel<Track>>,
     people: Rc<VecModel<Person>>,
     related: Rc<VecModel<Poster>>,
     seasons: Rc<VecModel<SharedString>>,
+    /// Per season: every episode watched.
+    seasons_watched: Rc<VecModel<bool>>,
     episodes: Rc<VecModel<Episode>>,
 }
 
@@ -67,7 +77,7 @@ struct State {
     favourites: Option<favourites::Store>,
     /// Everything we've seen, by rating key, so clicks can find the full item.
     items: HashMap<String, Item>,
-    images: HashMap<String, Image>,
+    images: images::Cache,
     pending_images: HashSet<String>,
     /// Bumped when the user navigates; late results for an older view are dropped.
     generation: u64,
@@ -94,6 +104,20 @@ struct State {
     now_playing: Option<NowPlaying>,
     /// Tracks of the album on the detail screen.
     album_tracks: Vec<Item>,
+    /// Music libraries: the tab shown (see `MUSIC_TABS`).
+    music_tab: i32,
+    /// The Songs tab's songs, in order, for playing on from one of them.
+    songs: Vec<Item>,
+    /// TV Home: the title the remote rested on last tick, about to fill the billboard.
+    hero_candidate: Option<String>,
+    /// The collection on the collection page.
+    collection: Option<Item>,
+    /// The artist page's albums, for Play and Shuffle.
+    artist_albums: Vec<Item>,
+    /// Music repeat: 0 off, 1 the whole queue, 2 the current track.
+    music_repeat: u8,
+    /// Where the remote focus was before it moved to the music bar.
+    music_return: Option<(SharedString, i32, i32)>,
     music: Option<MusicQueue>,
     return_to: String,
     last_poke: Option<Instant>,
@@ -108,6 +132,14 @@ struct MusicQueue {
     index: usize,
     last_report: Instant,
     art_url: String,
+    /// The cover for Now Playing.
+    art_large_url: String,
+    /// Lyrics fetched for this queue's songs, by id (None: the song has none).
+    lyrics: HashMap<String, Option<encheo_plex::Lyrics>>,
+    /// The song whose lyrics are being fetched.
+    lyrics_loading: Option<String>,
+    /// The song whose lyrics (or "Finding the words…") are on screen.
+    lyrics_shown: String,
 }
 
 struct NowPlaying {
@@ -324,6 +356,9 @@ fn enter_home() {
         let several = backends.len() > 1;
         let mut libs: Vec<(String, encheo_plex::Library, Vec<Item>)> = Vec::new();
         let mut on_deck = Vec::new();
+        let mut collections = Vec::new();
+        // The servers' suggested rows (Top Rated, More in <genre>, …), by library index.
+        let mut discover: Vec<(usize, backend::Rows)> = Vec::new();
         let mut errors = Vec::new();
         let watchlist = match with_state(|s| (plex(&s.session), s.session.token.clone())) {
             (plex, Some(token)) => plex.watchlist(&token).await.unwrap_or_default(),
@@ -332,8 +367,12 @@ fn enter_home() {
         for b in &backends {
             match b.libraries().await {
                 Ok(list) => {
+                    collections.extend(b.collections(&list).await);
                     for l in list {
                         let recent = b.recently_added(&l.key, 24).await.unwrap_or_default();
+                        if matches!(l.kind.as_str(), "movie" | "show") {
+                            discover.push((libs.len(), b.discover(&l.key, &l.kind).await));
+                        }
                         libs.push((b.label(), l, recent));
                     }
                 }
@@ -370,6 +409,8 @@ fn enter_home() {
             let (file_posters, file_items): (Vec<Poster>, Vec<Item>) = shares::continue_watching().into_iter().unzip();
             remember(file_items);
             let cw: Vec<Poster> = file_posters.into_iter().chain(on_deck.iter().map(|i| poster(i, true))).collect();
+            // TV: wide cards in every row, like Netflix (music stays square).
+            let wide = ui.global::<Theme>().get_tv();
             let mut rows = Vec::new();
             let mut row_models = Vec::new();
             // Watchlist entries live on plex.tv; their ids say so, and opening one finds it on the server.
@@ -387,8 +428,8 @@ fn enter_home() {
                 row_models.push(model);
             }
             if !watch.is_empty() {
-                let model = Rc::new(VecModel::from(watch.iter().map(|i| poster(i, false)).collect::<Vec<_>>()));
-                rows.push(HomeRow { title: "Watchlist".into(), library: -1, landscape: false, square: false, items: ModelRc::from(model.clone()) });
+                let model = Rc::new(VecModel::from(watch.iter().map(|i| poster(i, wide)).collect::<Vec<_>>()));
+                rows.push(HomeRow { title: "Watchlist".into(), library: -1, landscape: wide, square: false, items: ModelRc::from(model.clone()) });
                 row_models.push(model);
                 remember(watch);
             }
@@ -396,16 +437,41 @@ fn enter_home() {
                 if items.is_empty() {
                     continue;
                 }
-                let model = Rc::new(VecModel::from(group_recent(items).iter().map(recent_poster).collect::<Vec<_>>()));
+                let square = l.kind == "artist";
+                let land = wide && !square;
+                let model = Rc::new(VecModel::from(group_recent(items).iter().map(|r| recent_poster(r, land)).collect::<Vec<_>>()));
                 let title = if several { format!("Recently Added in {} · {group}", l.title) } else { format!("Recently Added in {}", l.title) };
                 rows.push(HomeRow {
                     title: title.into(),
                     library: index as i32,
-                    landscape: false,
-                    square: l.kind == "artist",
+                    landscape: land,
+                    square,
                     items: ModelRc::from(model.clone()),
                 });
                 row_models.push(model);
+            }
+            // The suggested rows, taking turns between libraries so films and TV mix.
+            let longest = discover.iter().map(|(_, r)| r.len()).max().unwrap_or(0);
+            let mut suggested = Vec::new();
+            for n in 0..longest {
+                for (index, lib_rows) in &discover {
+                    if let Some((title, items)) = lib_rows.get(n) {
+                        // Episode rows (Recently Released Episodes) are wide everywhere.
+                        let land = wide || items.iter().all(|i| i.kind == ItemKind::Episode);
+                        let title = if several { format!("{title} · {}", libs[*index].0) } else { title.clone() };
+                        let model = Rc::new(VecModel::from(items.iter().map(|i| poster(i, land)).collect::<Vec<_>>()));
+                        rows.push(HomeRow { title: title.into(), library: -1, landscape: land, square: false, items: ModelRc::from(model.clone()) });
+                        row_models.push(model);
+                        suggested.extend(items.iter().cloned());
+                    }
+                }
+            }
+            remember(suggested);
+            if !collections.is_empty() {
+                let model = Rc::new(VecModel::from(collections.iter().map(|i| poster(i, wide)).collect::<Vec<_>>()));
+                rows.push(HomeRow { title: "Collections".into(), library: -1, landscape: wide, square: false, items: ModelRc::from(model.clone()) });
+                row_models.push(model);
+                remember(collections);
             }
             let grouped: Vec<Item> = libs.iter().flat_map(|(_, _, items)| group_recent(items).into_iter().map(|(i, _)| i)).collect();
             set_billboard(ui, pick_billboard(&libs, &grouped, &on_deck));
@@ -446,23 +512,93 @@ fn set_billboard(ui: &AppWindow, item: Option<Item>) {
     match item.kind {
         ItemKind::Movie => meta.extend(item.duration.map(runtime)),
         ItemKind::Show => meta.extend(item.child_count.map(|n| format!("{n} season{}", if n == 1 { "" } else { "s" }))),
+        ItemKind::Collection => meta.extend(item.child_count.map(|n| format!("Collection of {n}"))),
+        ItemKind::Album => meta.splice(0..0, item.parent_title.clone()).for_each(drop),
         _ => {}
     }
-    let art_url = backdrop_url(&item);
+    // Titles without a backdrop (collections, albums): their poster, filling the space.
+    let art_url = match backdrop_url(&item) {
+        b if b.is_empty() => art_url(item.thumb.as_deref().or(item.composite.as_deref()), 1920, 1080),
+        b => b,
+    };
+    let playable = matches!(item.kind, ItemKind::Movie | ItemKind::Show | ItemKind::Episode);
     let logo_url = art_url_for_logo(&item);
+    if item.kind == ItemKind::Episode {
+        meta.insert(0, format!("{} · {}", item.episode_label().unwrap_or_default(), item.title));
+    }
+    let title = if item.kind == ItemKind::Episode { item.grandparent_title.clone().unwrap_or_else(|| item.title.clone()) } else { item.title.clone() };
+    // More Info opens this id: an episode's show (opening an episode would play it).
+    let id = if item.kind == ItemKind::Episode { item.grandparent_rating_key.clone().unwrap_or_else(|| item.rating_key.clone()) } else { item.rating_key.clone() };
     let b = Billboard {
-        id: item.rating_key.clone().into(),
-        title: item.title.clone().into(),
+        id: id.into(),
+        title: title.into(),
         meta: meta.join("  ·  ").into(),
         summary: short_summary(item.summary.as_deref().unwrap_or_default(), 200).into(),
         image: want_image(&art_url),
         art_url: art_url.into(),
         logo: want_image(&logo_url),
         logo_url: logo_url.into(),
-        play_label: if item.view_offset.is_some_and(|o| o > 0) { "Resume" } else { "Play" }.into(),
+        play_label: if !playable {
+            "Open"
+        } else if item.view_offset.is_some_and(|o| o > 0) {
+            "Resume"
+        } else {
+            "Play"
+        }
+        .into(),
     };
     with_state(|s| s.billboard = Some(item));
     ui.set_billboard(b);
+}
+
+/// TV Home: the billboard shows the film or show the remote is on, once the focus has rested
+/// there for a tick (so scrolling past titles doesn't fetch every backdrop).
+fn tv_hero_follow(ui: &AppWindow) {
+    let nav = ui.global::<Nav>();
+    if !ui.global::<Theme>().get_tv()
+        || ui.get_screen() != "home"
+        || ui.get_selected_library() != -1
+        || ui.get_billboard().id.is_empty()
+        || !nav.get_active()
+        || nav.get_zone() != "content"
+        || nav.get_row() == 0
+    {
+        return;
+    }
+    let Some(id) = focused_home_id(ui, nav.get_row(), nav.get_col()) else { return };
+    let rested = with_state(|s| {
+        let same = s.hero_candidate.as_deref() == Some(id.as_str());
+        s.hero_candidate = Some(id.to_string());
+        same
+    });
+    let current = with_state(|s| s.billboard.as_ref().map(|b| b.rating_key.clone()));
+    if !rested || current.as_deref() == Some(id.as_str()) {
+        return;
+    }
+    let item = with_state(|s| s.items.get(id.as_str()).cloned());
+    if let Some(item) = item {
+        set_billboard(ui, Some(item));
+    }
+}
+
+/// The id of the card at this remote position on Home (None on the billboard row).
+fn focused_home_id(ui: &AppWindow, row: i32, col: i32) -> Option<SharedString> {
+    let mut r = row;
+    if !ui.get_billboard().id.is_empty() {
+        if r == 0 {
+            return None;
+        }
+        r -= 1;
+    }
+    with_models(|m| {
+        if m.continue_watching.row_count() > 0 {
+            if r == 0 {
+                return m.continue_watching.row_data(col as usize).map(|p| p.id);
+            }
+            r -= 1;
+        }
+        m.home_rows.row_data(r as usize).and_then(|hr| hr.items.row_data(col as usize)).map(|p| p.id)
+    })
 }
 
 fn art_url_for_logo(item: &Item) -> String {
@@ -472,6 +608,9 @@ fn art_url_for_logo(item: &Item) -> String {
 /// The billboard's Play: a film plays (resuming); a show plays its next episode.
 fn play_billboard() {
     let Some(item) = with_state(|s| s.billboard.clone()) else { return };
+    if !matches!(item.kind, ItemKind::Movie | ItemKind::Show | ItemKind::Episode) {
+        return open_item(item.rating_key);
+    }
     if item.kind != ItemKind::Show {
         return play(item);
     }
@@ -531,8 +670,8 @@ fn group_recent(items: &[Item]) -> Vec<(Item, usize)> {
         .collect()
 }
 
-fn recent_poster((item, count): &(Item, usize)) -> Poster {
-    let mut p = poster(item, false);
+fn recent_poster((item, count): &(Item, usize), landscape: bool) -> Poster {
+    let mut p = poster(item, landscape);
     match item.kind {
         ItemKind::Show if *count > 1 => p.subtitle = format!("{count} new episodes").into(),
         ItemKind::Show => p.subtitle = item.summary.clone().unwrap_or_else(|| "New episode".into()).into(),
@@ -567,7 +706,15 @@ fn select_library(index: i32) {
     let Some(key) = key else { return };
     let Some(server) = backend_for(&key) else { return };
     let kind_str = kind.clone().unwrap_or_default();
-    ui.set_grid_square(kind.as_deref() == Some("artist"));
+    // Music libraries have tabs: artists, albums, songs, playlists.
+    let music = kind_str == "artist";
+    let tab = if music { with_state(|s| s.music_tab) } else { 0 };
+    let tabs: Vec<SharedString> = if music { MUSIC_TABS.iter().map(|t| SharedString::from(*t)).collect() } else { vec![] };
+    ui.set_grid_tabs(ModelRc::new(VecModel::from(tabs)));
+    ui.set_grid_tab(tab);
+    with_state(|s| s.songs.clear());
+    with_models(|m| m.songs.set_vec(Vec::<Track>::new()));
+    ui.set_grid_square(music);
     let title = with_models(|m| m.libraries.row_data(index as usize).map(|l| l.title)).unwrap_or_default();
     ui.set_grid_title(title);
     ui.set_loading(true);
@@ -575,7 +722,11 @@ fn select_library(index: i32) {
     rt().spawn(async move {
         let mut start = 0;
         loop {
-            let page = server.library_items(&key, &kind_str, start, PAGE).await;
+            let page = if music {
+                server.music_items(&key, tab, start, PAGE).await
+            } else {
+                server.library_items(&key, &kind_str, start, PAGE).await
+            };
             let done = match &page {
                 Ok(p) => p.items.len() < PAGE as usize || p.total.is_some_and(|t| start + PAGE >= t),
                 Err(_) => true,
@@ -588,6 +739,21 @@ fn select_library(index: i32) {
                     return;
                 }
                 match page {
+                    Ok(p) if music && tab == SONGS_TAB => {
+                        // A list, not posters; the grid only keeps the ids, for the remote.
+                        let base = with_state(|s| {
+                            let n = s.songs.len();
+                            s.songs.extend(p.items.iter().cloned());
+                            n
+                        });
+                        let rows: Vec<Track> = p.items.iter().enumerate().map(|(i, t)| song_row(t, base + i)).collect();
+                        let ids: Vec<Poster> = p.items.iter().map(|t| Poster { id: t.rating_key.clone().into(), ..Default::default() }).collect();
+                        remember(p.items);
+                        with_models(|m| {
+                            rows.into_iter().for_each(|r| m.songs.push(r));
+                            ids.into_iter().for_each(|x| m.grid.push(x));
+                        });
+                    }
                     Ok(p) => {
                         let posters: Vec<Poster> = p.items.iter().map(|i| poster(i, false)).collect();
                         remember(p.items);
@@ -626,7 +792,7 @@ fn remember(items: impl IntoIterator<Item = Item>) {
 fn poster(item: &Item, landscape: bool) -> Poster {
     let is_ep = item.kind == ItemKind::Episode;
     let title = if is_ep { item.grandparent_title.clone().unwrap_or_default() } else { item.title.clone() };
-    let square = matches!(item.kind, ItemKind::Artist | ItemKind::Album | ItemKind::Track);
+    let square = matches!(item.kind, ItemKind::Artist | ItemKind::Album | ItemKind::Track | ItemKind::Playlist);
     let subtitle = if is_ep {
         format!("{} · {}", item.episode_label().unwrap_or_default(), item.title)
     } else if item.kind == ItemKind::Album {
@@ -636,6 +802,16 @@ fn poster(item: &Item, landscape: bool) -> Poster {
     } else {
         match (item.kind.clone(), item.year, item.leaf_count) {
             (ItemKind::Show, _, Some(n)) => format!("{n} episodes"),
+            (ItemKind::Playlist, _, _) => match item.leaf_count.or(item.child_count) {
+                Some(1) => "1 song".into(),
+                Some(n) => format!("{n} songs"),
+                None => "Playlist".into(),
+            },
+            (ItemKind::Collection, _, _) => match item.child_count {
+                Some(1) => "1 title".into(),
+                Some(n) => format!("{n} titles"),
+                None => "Collection".into(),
+            },
             (_, Some(y), _) => y.to_string(),
             _ => String::new(),
         }
@@ -645,7 +821,7 @@ fn poster(item: &Item, landscape: bool) -> Poster {
     } else if is_ep {
         item.grandparent_thumb.clone().or_else(|| item.thumb.clone())
     } else {
-        item.thumb.clone()
+        item.thumb.clone().or_else(|| item.composite.clone())
     };
     let (w, h) = if landscape {
         (560, 316)
@@ -685,7 +861,7 @@ fn want_image(url: &str) -> Image {
     }
     let start = with_state(|s| {
         if let Some(i) = s.images.get(url) {
-            return Err(i.clone());
+            return Err(i);
         }
         Ok(s.pending_images.insert(url.to_string()))
     });
@@ -755,6 +931,9 @@ fn apply_image(ui: &AppWindow, url: &str, img: &Image) {
     if with_state(|s| s.music.as_ref().is_some_and(|m| m.art_url == url)) {
         ui.set_music_art(img.clone());
     }
+    if with_state(|s| s.music.as_ref().is_some_and(|m| m.art_large_url == url)) {
+        ui.set_music_art_large(img.clone());
+    }
     if with_state(|s| s.detail_backdrop_url == url) {
         ui.set_detail_backdrop(img.clone());
     }
@@ -804,9 +983,102 @@ fn open_item(id: String) {
         return play(item);
     }
     if item.kind == ItemKind::Track {
+        if ui().get_screen() == "home" && with_state(|s| s.songs.iter().any(|t| t.rating_key == item.rating_key)) {
+            return play_song(&item.rating_key);
+        }
         return play_music(vec![item], 0);
     }
+    if item.kind == ItemKind::Collection {
+        return open_collection(item);
+    }
     show_detail(item);
+}
+
+const MUSIC_TABS: [&str; 4] = ["Artists", "Albums", "Songs", "Playlists"];
+const SONGS_TAB: i32 = 2;
+
+/// A music library's tab.
+fn select_tab(tab: i32) {
+    with_state(|s| s.music_tab = tab);
+    select_library(ui().get_selected_library());
+}
+
+/// One line of the Songs tab.
+fn song_row(t: &Item, position: usize) -> Track {
+    let artist = t.original_title.clone().or_else(|| t.grandparent_title.clone()).unwrap_or_default();
+    let album = t.parent_title.clone().unwrap_or_default();
+    let playing = with_state(|s| s.music.as_ref().and_then(|q| q.items.get(q.index)).is_some_and(|p| p.rating_key == t.rating_key));
+    Track {
+        id: t.rating_key.clone().into(),
+        number: (position + 1).to_string().into(),
+        title: t.title.clone().into(),
+        artist: [artist, album].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ").into(),
+        runtime: t.duration.map(|d| clock(d as f64 / 1000.0)).unwrap_or_default().into(),
+        playing,
+    }
+}
+
+/// Play the Songs tab from this song on (a few hundred at a time, so the queue stays quick).
+fn play_song(id: &str) {
+    let (songs, idx) = with_state(|s| (s.songs.clone(), s.songs.iter().position(|t| t.rating_key == id)));
+    if let Some(i) = idx {
+        let end = (i + 500).min(songs.len());
+        play_music(songs[i..end].to_vec(), 0);
+    }
+}
+
+/// The page that shows a collection: like a library page (selected library -3).
+const COLLECTION_PAGE: i32 = -3;
+
+/// A collection's titles, as a page of posters.
+fn open_collection(item: Item) {
+    let ui = ui();
+    let Some(server) = backend_for(&item.rating_key) else { return };
+    let generation = with_state(|s| {
+        s.generation += 1;
+        s.share_view = None;
+        s.collection = Some(item.clone());
+        s.generation
+    });
+    ui.set_screen("home".into());
+    ui.set_selected_library(COLLECTION_PAGE);
+    ui.set_grid_square(false);
+    ui.set_grid_title(item.title.clone().into());
+    ui.set_loading(true);
+    with_models(|m| m.grid.set_vec(Vec::<Poster>::new()));
+    if ui.global::<Nav>().get_active() {
+        set_focus(&ui, "content", 0, 0);
+    }
+    let id = item.rating_key.clone();
+    rt().spawn(async move {
+        let found = server.collection_items(&id).await;
+        on_ui(move |ui| {
+            if with_state(|s| s.generation) != generation {
+                return;
+            }
+            ui.set_loading(false);
+            match found {
+                Ok(items) => {
+                    let posters: Vec<Poster> = items.iter().map(|i| poster(i, false)).collect();
+                    remember(items);
+                    with_models(|m| m.grid.set_vec(posters));
+                }
+                Err(e) => toast(ui, format!("Couldn't load the collection: {e}")),
+            }
+        });
+    });
+}
+
+/// Load the current library page again (a library, search results or a collection).
+fn reload_page(selected: i32) {
+    match selected {
+        -2 => search(ui().get_search_text().to_string()),
+        COLLECTION_PAGE => match with_state(|s| s.collection.clone()) {
+            Some(c) => open_collection(c),
+            None => enter_home(),
+        },
+        i => select_library(i),
+    }
 }
 
 /// A watchlist title: show it from the server if the server has it.
@@ -854,17 +1126,20 @@ fn show_detail(item: Item) {
             ItemKind::Show => "show",
             ItemKind::Artist => "artist",
             ItemKind::Album => "album",
+            ItemKind::Playlist => "playlist",
             _ => "movie",
         }
         .into(),
     );
     ui.set_play_label(match item.kind {
-        ItemKind::Show | ItemKind::Artist => SharedString::new(),
-        ItemKind::Album => "Play album".into(),
+        ItemKind::Show => SharedString::new(),
+        ItemKind::Album | ItemKind::Artist | ItemKind::Playlist => "Play".into(),
         _ => play_label(&item).into(),
     });
+    ui.set_detail_can_shuffle(matches!(item.kind, ItemKind::Album | ItemKind::Artist | ItemKind::Playlist));
     with_models(|m| {
         m.seasons.set_vec(Vec::<SharedString>::new());
+        m.seasons_watched.set_vec(Vec::<bool>::new());
         m.episodes.set_vec(Vec::<Episode>::new());
         m.albums.set_vec(Vec::<Poster>::new());
         m.tracks.set_vec(Vec::<Track>::new());
@@ -873,10 +1148,13 @@ fn show_detail(item: Item) {
     });
     with_state(|s| {
         s.album_tracks.clear();
+        s.artist_albums.clear();
         s.trailer = None;
     });
     ui.set_detail_can_trailer(false);
     ui.set_screen("detail".into());
+    // Where each section starts, for the remote focus (the old page's would be stale).
+    detail_rows(&ui);
     if matches!(item.kind, ItemKind::Movie | ItemKind::Show) {
         find_trailer(&item.rating_key);
     }
@@ -888,12 +1166,12 @@ fn show_detail(item: Item) {
     let kind = item.kind.clone();
     rt().spawn(async move {
         let full = server.metadata(&id).await.ok().flatten();
-        let children = if matches!(kind, ItemKind::Artist | ItemKind::Album) {
-            server.children(&id).await.unwrap_or_default()
-        } else {
-            vec![]
+        let children = match kind {
+            ItemKind::Artist | ItemKind::Album => server.children(&id).await.unwrap_or_default(),
+            ItemKind::Playlist => server.playlist_items(&id).await.unwrap_or_default(),
+            _ => vec![],
         };
-        let related = server.related(&id).await.unwrap_or_default();
+        let related = if kind == ItemKind::Playlist { vec![] } else { server.related(&id).await.unwrap_or_default() };
         let seasons = if is_show { server.children(&id).await.unwrap_or_default() } else { vec![] };
         let all_eps = if is_show { server.all_episodes(&id).await.unwrap_or_default() } else { vec![] };
         on_ui(move |ui| {
@@ -903,10 +1181,11 @@ fn show_detail(item: Item) {
             match kind {
                 ItemKind::Artist => {
                     let albums: Vec<Poster> = children.iter().map(|a| poster(a, false)).collect();
+                    with_state(|s| s.artist_albums = children.clone());
                     remember(children);
                     with_models(|m| m.albums.set_vec(albums));
                 }
-                ItemKind::Album => {
+                ItemKind::Album | ItemKind::Playlist => {
                     with_state(|s| s.album_tracks = children.clone());
                     refresh_tracks();
                     remember(children);
@@ -916,11 +1195,12 @@ fn show_detail(item: Item) {
             let related_posters: Vec<Poster> = related.iter().map(|i| poster(i, false)).collect();
             remember(related);
             with_models(|m| m.related.set_vec(related_posters));
+            detail_rows(ui);
             if let Some(full) = full {
                 fill_detail_text(ui, &full);
                 let cast = people(&full);
                 with_models(|m| m.people.set_vec(cast));
-                if !is_show && !matches!(full.kind, ItemKind::Artist | ItemKind::Album) {
+                if !is_show && !matches!(full.kind, ItemKind::Artist | ItemKind::Album | ItemKind::Playlist) {
                     ui.set_play_label(play_label(&full).into());
                 }
                 remember([full.clone()]);
@@ -946,7 +1226,10 @@ fn show_detail(item: Item) {
                     s.next_up = next;
                     s.season_items = seasons.clone();
                 });
-                with_models(|m| m.seasons.set_vec(seasons.iter().map(|s| SharedString::from(s.title.as_str())).collect::<Vec<_>>()));
+                with_models(|m| {
+                    m.seasons.set_vec(seasons.iter().map(|s| SharedString::from(s.title.as_str())).collect::<Vec<_>>());
+                    m.seasons_watched.set_vec(seasons.iter().map(Item::is_watched).collect::<Vec<_>>());
+                });
                 select_season(selected as i32);
             }
         });
@@ -959,7 +1242,14 @@ fn find_trailer(id: &str) {
     let generation = with_state(|s| s.generation);
     let id = id.to_string();
     rt().spawn(async move {
-        let trailer = server.trailer(&id).await;
+        let mut trailer = server.trailer(&id).await;
+        // Servers rarely have anime trailers; AniList does.
+        if trailer.is_none()
+            && let Some(full) = server.metadata(&id).await.ok().flatten()
+            && anilist::is_anime(&full)
+        {
+            trailer = anilist::trailer(&full).await.map(backend::Trailer::Link);
+        }
         on_ui(move |ui| {
             if with_state(|s| s.generation) != generation {
                 return;
@@ -1282,16 +1572,61 @@ fn toggle_watched() {
 }
 
 fn play_detail() {
-    let album = with_state(|s| {
-        (s.detail.as_ref().map(|d| d.kind.clone()) == Some(ItemKind::Album)).then(|| s.album_tracks.clone())
-    });
-    if let Some(tracks) = album {
-        return play_music(tracks, 0);
+    if !play_music_detail(false) {
+        let item = with_state(|s| s.next_up.clone().or_else(|| s.detail.clone()));
+        if let Some(item) = item {
+            play(item);
+        }
     }
-    let item = with_state(|s| s.next_up.clone().or_else(|| s.detail.clone()));
-    if let Some(item) = item {
-        play(item);
+}
+
+fn shuffle_detail() {
+    play_music_detail(true);
+}
+
+/// Albums and artists: play every track, in order or shuffled. False for anything else.
+fn play_music_detail(shuffle: bool) -> bool {
+    let kind = ui().get_detail_kind();
+    let order = move |tracks: Vec<Item>| if shuffle { shuffled(tracks) } else { tracks };
+    match kind.as_str() {
+        "album" | "playlist" => {
+            let tracks = with_state(|s| s.album_tracks.clone());
+            play_music(order(tracks), 0);
+        }
+        "artist" => {
+            // An artist's tracks are its albums' tracks, album by album.
+            let albums = with_state(|s| s.artist_albums.clone());
+            let Some(server) = albums.first().and_then(|a| backend_for(&a.rating_key)) else {
+                toast(&ui(), "Nothing to play.");
+                return true;
+            };
+            ui().set_loading(true);
+            rt().spawn(async move {
+                let mut tracks = Vec::new();
+                for album in &albums {
+                    tracks.extend(server.children(&album.rating_key).await.unwrap_or_default());
+                }
+                on_ui(move |ui| {
+                    ui.set_loading(false);
+                    play_music(order(tracks), 0);
+                });
+            });
+        }
+        _ => return false,
     }
+    true
+}
+
+/// The list in a random order (Fisher–Yates, seeded from a fresh random UUID).
+fn shuffled<T>(mut v: Vec<T>) -> Vec<T> {
+    let mut x = (uuid::Uuid::new_v4().as_u128() as u64) | 1;
+    for i in (1..v.len()).rev() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        v.swap(i, (x % (i as u64 + 1)) as usize);
+    }
+    v
 }
 
 // ---------- Playback ----------
@@ -1462,7 +1797,10 @@ fn report_item(item: Item, state: PlayState, position: f64) {
 fn stop_playback() {
     let Some(p) = player() else { return };
     let status = p.status();
-    report(PlayState::Stopped, status.position);
+    // (Nothing to report if the file never opened.)
+    if !status.idle {
+        report(PlayState::Stopped, status.position);
+    }
     p.stop();
     let ui = ui();
     if ps(&ui).get_pip() {
@@ -1485,7 +1823,7 @@ fn stop_playback() {
             let sel = ui.get_selected_library();
             ui.set_screen("home".into());
             if !shares::reload_current() {
-                if sel == -2 { refresh() } else { select_library(sel) }
+                if sel == -2 { refresh() } else { reload_page(sel) }
             }
         }
     });
@@ -1496,6 +1834,7 @@ fn stop_playback() {
 fn tick() {
     let ui = ui();
     fit_tv_scale(&ui);
+    tv_hero_follow(&ui);
     #[cfg(target_os = "ios")]
     ios_video::follow_size();
     if ui.get_screen() != "player" {
@@ -1523,6 +1862,13 @@ fn tick() {
     }
     apply_plex_streams(&p);
 
+    // mpv went idle without playing: the file couldn't be opened (refused, missing, unreadable).
+    // Say so instead of showing the spinner for ever.
+    let failed = st.idle && with_state(|s| s.now_playing.as_ref().is_some_and(|np| np.started.elapsed() > Duration::from_secs(5)));
+    if failed {
+        toast(&ui, "Couldn't play this: the server didn't send the video.");
+        return stop_playback();
+    }
     let (report_now, marker, hide, finished) = with_state(|s| {
         let Some(np) = s.now_playing.as_mut() else { return (false, None, false, false) };
         let report_now = np.last_report.elapsed() >= Duration::from_secs(10) && !st.buffering;
@@ -2189,8 +2535,15 @@ fn search(query: String) {
     });
     let query = query.trim().to_string();
     if query.is_empty() {
-        if ui().get_selected_library() == -2 {
-            enter_home();
+        let ui = ui();
+        if ui.get_selected_library() == -2 {
+            if ui.global::<Theme>().get_tv() {
+                ui.set_grid_title("Search".into());
+                ui.set_loading(false);
+                with_models(|m| m.grid.set_vec(Vec::<Poster>::new()));
+            } else {
+                enter_home();
+            }
         }
         return;
     }
@@ -2226,14 +2579,15 @@ fn search(query: String) {
                 ui.set_loading(false);
                 match results {
                     Ok(items) => {
+                        // Servers also list a show's episodes and seasons; the show is enough.
+                        let items: Vec<Item> =
+                            items.into_iter().filter(|i| !matches!(i.kind, ItemKind::Episode | ItemKind::Season)).collect();
                         let mut posters: Vec<Poster> = items.iter().map(|i| poster(i, false)).collect();
                         remember(items);
                         let progress = with_state(|s| s.progress.get_or_insert_with(progress::Store::load).clone());
                         posters.extend(files.iter().map(|(item, name)| shares::file_poster(item, name, &progress)));
                         remember(files.into_iter().map(|(item, _)| item).collect::<Vec<_>>());
-                        if posters.is_empty() {
-                            toast(ui, "Nothing found.");
-                        }
+                        // An empty grid says "No results" itself; no toast on every letter.
                         with_models(|m| m.grid.set_vec(posters));
                     }
                     Err(e) => toast(ui, format!("Search failed: {e}")),
@@ -2243,18 +2597,99 @@ fn search(query: String) {
     });
 }
 
+/// TV: the search page, with a keyboard for the remote on the left and results on the right.
+fn open_tv_search() {
+    let ui = ui();
+    ui.set_screen("home".into());
+    ui.set_selected_library(-2);
+    with_state(|s| s.generation += 1);
+    let text = ui.get_search_text().to_string();
+    if text.trim().is_empty() {
+        ui.set_grid_title("Search".into());
+        ui.set_loading(false);
+        with_models(|m| m.grid.set_vec(Vec::<Poster>::new()));
+    } else {
+        search(text);
+    }
+    ui.global::<Nav>().set_active(true);
+    set_focus(&ui, "keys", 0, 0);
+}
+
+/// The TV search keyboard's keys, row by row (6 wide); the bottom row is Space, Delete, Clear.
+const TV_KEYS: &str = "abcdefghijklmnopqrstuvwxyz1234567890";
+
+fn tv_key(key: &str) {
+    let ui = ui();
+    let mut text = ui.get_search_text().to_string();
+    match key {
+        "space" if !text.is_empty() && !text.ends_with(' ') => text.push(' '),
+        "space" => {}
+        "delete" => {
+            text.pop();
+        }
+        "clear" => text.clear(),
+        k => text.push_str(k),
+    }
+    ui.set_search_text(text.clone().into());
+    search(text);
+}
+
+/// Remote focus on the TV search keyboard (zone "keys").
+fn keys_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
+    use slint::platform::Key;
+    let is = |k: Key| SharedString::from(k).as_str() == key;
+    let to_results = |ui: &AppWindow| {
+        if with_models(|m| m.grid.row_count()) > 0 {
+            set_focus(ui, "content", 0, 0);
+        }
+    };
+    let bottom = 6;
+    if enter {
+        let k = if row < bottom {
+            TV_KEYS.get((row * 6 + col) as usize..(row * 6 + col + 1) as usize).unwrap_or("")
+        } else {
+            ["space", "delete", "clear"][(col / 2).clamp(0, 2) as usize]
+        };
+        if !k.is_empty() {
+            tv_key(k);
+        }
+    } else if is(Key::UpArrow) {
+        set_focus(ui, "keys", (row - 1).max(0), col);
+    } else if is(Key::DownArrow) {
+        let r = (row + 1).min(bottom);
+        set_focus(ui, "keys", r, if r == bottom { col / 2 * 2 } else { col });
+    } else if is(Key::LeftArrow) {
+        let step = if row == bottom { 2 } else { 1 };
+        if col >= step {
+            set_focus(ui, "keys", row, col - step);
+        } else {
+            set_focus(ui, "side", 0, 0);
+        }
+    } else if is(Key::RightArrow) {
+        let last = if row == bottom { 4 } else { 5 };
+        if col < last {
+            set_focus(ui, "keys", row, if row == bottom { col / 2 * 2 + 2 } else { col + 1 });
+        } else {
+            to_results(ui);
+        }
+    }
+    true
+}
+
+fn tv_search_page(ui: &AppWindow) -> bool {
+    ui.global::<Theme>().get_tv() && ui.get_screen() == "home" && ui.get_selected_library() == -2
+}
+
 fn refresh() {
     if shares::reload_current() {
         return;
     }
     let ui = ui();
-    match ui.get_selected_library() {
-        -2 => {
-            shares::forget_index();
-            search(ui.get_search_text().to_string())
-        }
-        i => select_library(i),
+    let selected = ui.get_selected_library();
+    if selected == -2 {
+        shares::forget_index();
     }
+    reload_page(selected);
 }
 
 // ---------- Music ----------
@@ -2278,7 +2713,8 @@ fn play_music(items: Vec<Item>, start: usize) {
         }
     }
     p.set_playlist_pos(start);
-    with_state(|s| s.music = Some(MusicQueue { items, index: usize::MAX, last_report: Instant::now(), art_url: String::new() }));
+    p.set_repeat(with_state(|s| s.music_repeat));
+    with_state(|s| s.music = Some(MusicQueue { items, index: usize::MAX, last_report: Instant::now(), art_url: String::new(), art_large_url: String::new(), lyrics: HashMap::new(), lyrics_loading: None, lyrics_shown: String::new() }));
     ui().set_music_active(true);
     music_tick(&ui());
 }
@@ -2321,6 +2757,13 @@ fn music_tick(ui: &AppWindow) {
                 .into(),
         );
         ui.set_music_art(want_image(&url));
+        let large = art_url(track.parent_thumb.as_deref().or(track.thumb.as_deref()), 800, 800);
+        with_state(|s| {
+            if let Some(q) = s.music.as_mut() {
+                q.art_large_url = large.clone();
+            }
+        });
+        ui.set_music_art_large(want_image(&large));
         refresh_tracks();
         report_item(track.clone(), PlayState::Playing, 0.0);
     }
@@ -2329,8 +2772,125 @@ fn music_tick(ui: &AppWindow) {
     ui.set_music_duration(if st.duration > 0.0 { st.duration as f32 } else { track.duration.unwrap_or(0) as f32 / 1000.0 });
     ui.set_music_position_text(clock(st.position).into());
     ui.set_music_duration_text(clock(ui.get_music_duration() as f64).into());
+    lyrics_tick(ui, &track, st.position);
+    #[cfg(target_os = "android")]
+    android_media::sync(
+        &track.rating_key,
+        &track.title,
+        track.artist().unwrap_or_default(),
+        track.parent_title.as_deref().unwrap_or_default(),
+        &with_state(|s| s.music.as_ref().map(|q| q.art_large_url.clone()).unwrap_or_default()),
+        ui.get_music_duration() as f64,
+        st.position,
+        !st.paused,
+    );
     if report_now {
         report_item(track, if st.paused { PlayState::Paused } else { PlayState::Playing }, st.position);
+    }
+}
+
+/// Android: a music button on the lock screen, in the notification or on headphones.
+#[cfg(target_os = "android")]
+fn media_command(cmd: &str) {
+    let ui = ui();
+    let Some(p) = player() else { return };
+    if !ui.get_music_active() {
+        return android_media::stop();
+    }
+    let paused = p.status().paused;
+    match cmd {
+        "play" if paused => ui.invoke_music_toggle(),
+        "pause" if !paused => ui.invoke_music_toggle(),
+        "next" => ui.invoke_music_next(),
+        "prev" => ui.invoke_music_prev(),
+        "stop" => music_close(),
+        _ => {
+            if let Some(ms) = cmd.strip_prefix("seek:").and_then(|m| m.parse::<f64>().ok()) {
+                p.seek_to(ms / 1000.0);
+            }
+        }
+    }
+}
+
+/// Lyrics in Now Playing, while they're open: fetches the song's words once, puts them on screen
+/// when the song changes, and lights the line being sung.
+fn lyrics_tick(ui: &AppWindow, track: &Item, position: f64) {
+    if !ui.get_lyrics_open() {
+        return;
+    }
+    let id = &track.rating_key;
+    enum Step {
+        Fetch,
+        Wait,
+        Show(Option<encheo_plex::Lyrics>),
+        Follow(i32),
+    }
+    let step = with_state(|s| {
+        let q = s.music.as_mut()?;
+        let fresh = q.lyrics_shown != *id;
+        Some(match q.lyrics.get(id) {
+            Some(l) if fresh => {
+                q.lyrics_shown = id.clone();
+                Step::Show(l.clone())
+            }
+            Some(l) => Step::Follow(
+                l.as_ref().filter(|l| l.synced).and_then(|l| lyrics::current(&l.lines, position)).map_or(-1, |i| i as i32),
+            ),
+            None if q.lyrics_loading.as_deref() == Some(id) => Step::Wait,
+            None => {
+                q.lyrics_loading = Some(id.clone());
+                q.lyrics_shown = id.clone();
+                Step::Fetch
+            }
+        })
+    });
+    match step {
+        None | Some(Step::Wait) => {}
+        Some(Step::Fetch) => {
+            ui.set_music_lyrics(ModelRc::default());
+            ui.set_music_lyric_index(-1);
+            ui.set_music_lyrics_credit(SharedString::new());
+            ui.set_music_lyrics_state("loading".into());
+            let Some(server) = backend_for(id) else { return };
+            let track = track.clone();
+            rt().spawn(async move {
+                // Run apart, so a failure inside still ends in "No lyrics" rather than a spinner.
+                let t = track.clone();
+                let found = rt().spawn(async move { server.lyrics(&t).await }).await.ok().flatten();
+                on_ui(move |ui| {
+                    with_state(|s| {
+                        if let Some(q) = s.music.as_mut() {
+                            let id = track.rating_key.clone();
+                            // (The song may have changed meanwhile: leave the next one's fetch be.)
+                            if q.lyrics_loading.as_ref() == Some(&id) {
+                                q.lyrics_loading = None;
+                            }
+                            if q.lyrics_shown == id {
+                                q.lyrics_shown.clear(); // shown by the tick below
+                            }
+                            q.lyrics.insert(id, found);
+                        }
+                    });
+                    music_tick(ui);
+                });
+            });
+        }
+        Some(Step::Show(l)) => {
+            let (state, lines, credit) = match l {
+                None => ("none", Vec::new(), String::new()),
+                Some(l) => (
+                    if l.synced { "synced" } else { "plain" },
+                    l.lines.into_iter().map(|l| LyricLine { text: l.text.into(), time: l.start as f32 }).collect(),
+                    l.credit.unwrap_or_default(),
+                ),
+            };
+            ui.set_music_lyric_index(-1);
+            ui.set_music_lyrics(ModelRc::new(VecModel::from(lines)));
+            ui.set_music_lyrics_credit(credit.into());
+            ui.set_music_lyrics_state(state.into());
+            lyrics_tick(ui, track, position);
+        }
+        Some(Step::Follow(i)) => ui.set_music_lyric_index(i),
     }
 }
 
@@ -2340,14 +2900,53 @@ fn refresh_tracks() {
         (s.album_tracks.clone(), s.music.as_ref().and_then(|q| q.items.get(q.index)).map(|i| i.rating_key.clone()))
     });
     let album_artist = with_state(|s| s.detail.as_ref().and_then(|d| d.parent_title.clone()));
+    let playlist = ui().get_detail_kind() == "playlist";
+    let queue: Vec<Track> = with_state(|s| {
+        s.music
+            .as_ref()
+            .map(|q| {
+                q.items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| Track {
+                        id: t.rating_key.clone().into(),
+                        number: (i + 1).to_string().into(),
+                        title: t.title.clone().into(),
+                        artist: t.original_title.clone().or_else(|| t.grandparent_title.clone()).unwrap_or_default().into(),
+                        runtime: t.duration.map(|d| clock(d as f64 / 1000.0)).unwrap_or_default().into(),
+                        playing: i == q.index,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    with_models(|m| m.queue.set_vec(queue));
+    ui().set_music_queue_index(with_state(|s| s.music.as_ref().map_or(-1, |q| q.index as i32)));
+    with_models(|m| {
+        for i in 0..m.songs.row_count() {
+            if let Some(mut r) = m.songs.row_data(i) {
+                let now = playing.as_deref() == Some(r.id.as_str());
+                if r.playing != now {
+                    r.playing = now;
+                    m.songs.set_row_data(i, r);
+                }
+            }
+        }
+    });
     let rows: Vec<Track> = tracks
         .iter()
-        .map(|t| Track {
+        .enumerate()
+        .map(|(i, t)| Track {
             id: t.rating_key.clone().into(),
-            number: t.index.map(|n| n.to_string()).unwrap_or_default().into(),
+            number: if playlist { (i + 1).to_string() } else { t.index.map(|n| n.to_string()).unwrap_or_default() }.into(),
             title: t.title.clone().into(),
-            // Only show the artist when it differs from the album's (features, compilations).
-            artist: t.original_title.clone().filter(|a| Some(a) != album_artist.as_ref()).unwrap_or_default().into(),
+            // Only show the artist when it differs from the album's (features, compilations);
+            // a playlist's songs are by anyone.
+            artist: if playlist {
+                t.original_title.clone().or_else(|| t.grandparent_title.clone()).unwrap_or_default().into()
+            } else {
+                t.original_title.clone().filter(|a| Some(a) != album_artist.as_ref()).unwrap_or_default().into()
+            },
             runtime: t.duration.map(|d| clock(d as f64 / 1000.0)).unwrap_or_default().into(),
             playing: playing.as_deref() == Some(t.rating_key.as_str()),
         })
@@ -2364,6 +2963,164 @@ fn music_close() {
     p.stop();
     ui().set_music_active(false);
     refresh_tracks();
+    leave_music_bar();
+    #[cfg(target_os = "android")]
+    android_media::stop();
+    if ui().get_now_playing_open() {
+        now_playing(false);
+    }
+}
+
+/// Open or close Now Playing. The remote focus goes to Play/Pause, and back where it was after.
+fn now_playing(open: bool) {
+    let ui = ui();
+    let nav = ui.global::<Nav>();
+    if open == ui.get_now_playing_open() {
+        return;
+    }
+    if open {
+        if !ui.get_music_active() {
+            return;
+        }
+        if nav.get_zone() != "music" && nav.get_zone() != "np" {
+            with_state(|s| s.music_return = Some((nav.get_zone(), nav.get_row(), nav.get_col())));
+        }
+        ui.set_now_playing_open(true);
+        if nav.get_active() {
+            set_focus(&ui, "np", 0, 1);
+        }
+    } else {
+        ui.set_now_playing_open(false);
+        if nav.get_zone() == "np" {
+            match with_state(|s| s.music_return.take()) {
+                Some((zone, row, col)) => set_focus(&ui, &zone, row, col),
+                None => set_focus(&ui, "content", 0, 0),
+            }
+        }
+    }
+}
+
+/// Now Playing: start this queued song.
+fn music_jump(id: &str) {
+    let i = with_state(|s| s.music.as_ref().and_then(|q| q.items.iter().position(|t| t.rating_key == id)));
+    if let (Some(i), Some(p)) = (i, player()) {
+        p.set_playlist_pos(i);
+        if p.status().paused {
+            p.toggle_pause();
+        }
+    }
+}
+
+/// Remote focus on Now Playing: row 0 the controls, then the queue.
+fn np_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
+    use slint::platform::Key;
+    let is = |k: Key| SharedString::from(k).as_str() == key;
+    // Below the controls: the queue, or the lines of synced lyrics (plain ones can't be picked).
+    let lyrics = ui.get_lyrics_open();
+    let rows = if !lyrics {
+        with_models(|m| m.queue.row_count()) as i32
+    } else if ui.get_music_lyrics_state() == "synced" {
+        ui.get_music_lyrics().row_count() as i32
+    } else {
+        0
+    };
+    if enter {
+        if row == 0 {
+            match col {
+                0 => ui.invoke_music_prev(),
+                1 => ui.invoke_music_toggle(),
+                2 => ui.invoke_music_next(),
+                3 => cycle_repeat(),
+                _ => {
+                    ui.set_lyrics_open(!lyrics);
+                    music_tick(ui);
+                }
+            }
+        } else if lyrics {
+            // Sing from this line.
+            if let Some(l) = ui.get_music_lyrics().row_data(row as usize - 1) {
+                ui.invoke_music_seek_to(l.time);
+                set_focus(ui, "np", 0, 1);
+            }
+        } else if let Some(t) = with_models(|m| m.queue.row_data(row as usize - 1)) {
+            music_jump(&t.id);
+        }
+    } else if row == 0 && is(Key::LeftArrow) {
+        set_focus(ui, "np", 0, (col - 1).max(0));
+    } else if row == 0 && is(Key::RightArrow) {
+        set_focus(ui, "np", 0, (col + 1).min(4));
+    } else if is(Key::DownArrow) && row < rows {
+        // Into the queue at the song that's playing; into the lyrics at the line being sung.
+        let here = if lyrics { ui.get_music_lyric_index().max(0) } else { with_state(|s| s.music.as_ref().map_or(0, |q| q.index as i32)) };
+        let start = if row == 0 { here + 1 } else { row + 1 };
+        set_focus(ui, "np", start.min(rows), 0);
+    } else if is(Key::UpArrow) && row > 0 {
+        set_focus(ui, "np", row - 1, if row == 1 { 1 } else { 0 });
+    }
+    true
+}
+
+/// Repeat: off → the whole queue → this track → off.
+fn cycle_repeat() {
+    let mode = with_state(|s| {
+        s.music_repeat = (s.music_repeat + 1) % 3;
+        s.music_repeat
+    });
+    ui().set_music_repeat(mode as i32);
+    if let Some(p) = player() {
+        p.set_repeat(mode);
+    }
+}
+
+/// Remote: Down from the last row of a page moves to the music bar (when music plays). Returns
+/// whether it did.
+fn enter_music_bar(ui: &AppWindow, zone: &str, row: i32, col: i32) -> bool {
+    if !ui.get_music_active() || ui.get_screen() == "player" {
+        return false;
+    }
+    with_state(|s| s.music_return = Some((zone.into(), row, col)));
+    set_focus(ui, "music", 0, 2);
+    true
+}
+
+/// The remote focus goes back to where it was before the music bar.
+fn leave_music_bar() {
+    let ui = ui();
+    if ui.global::<Nav>().get_zone() != "music" {
+        return;
+    }
+    match with_state(|s| s.music_return.take()) {
+        Some((zone, row, col)) => set_focus(&ui, &zone, row, col),
+        None => set_focus(&ui, "content", 0, 0),
+    }
+}
+
+/// Remote focus on the music bar: the song (opens Now Playing), Previous, Play/Pause, Next,
+/// Repeat, Close.
+fn music_nav(ui: &AppWindow, col: i32, key: &str, enter: bool) -> bool {
+    use slint::platform::Key;
+    let is = |k: Key| SharedString::from(k).as_str() == key;
+    if !ui.get_music_active() {
+        leave_music_bar();
+        return true;
+    }
+    if enter {
+        match col {
+            0 => now_playing(true),
+            1 => ui.invoke_music_prev(),
+            2 => ui.invoke_music_toggle(),
+            3 => ui.invoke_music_next(),
+            4 => cycle_repeat(),
+            _ => music_close(),
+        }
+    } else if is(Key::LeftArrow) {
+        set_focus(ui, "music", 0, (col - 1).max(0));
+    } else if is(Key::RightArrow) {
+        set_focus(ui, "music", 0, (col + 1).min(5));
+    } else if is(Key::UpArrow) {
+        leave_music_bar();
+    }
+    true
 }
 
 fn poke() {
@@ -2390,6 +3147,7 @@ enum DetailRow {
 /// tracks are one row each per item; their first row index is what the UI needs.
 fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     let actions = usize::from(!ui.get_play_label().is_empty())
+        + usize::from(ui.get_detail_can_shuffle())
         + usize::from(ui.get_detail_can_trailer())
         + usize::from(ui.get_detail_can_restart())
         + usize::from(ui.get_detail_can_mark_watched())
@@ -2406,7 +3164,7 @@ fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     if kind == "artist" {
         rows.push((DetailRow::Albums, albums));
     }
-    if kind == "album" {
+    if kind == "album" || kind == "playlist" {
         rows.extend(std::iter::repeat_n((DetailRow::Tracks, 1), tracks));
     }
     rows.push((DetailRow::Related, related));
@@ -2428,10 +3186,23 @@ fn nav_key(key: &str) -> bool {
     let (up, down, left, right) = (k(Key::UpArrow), k(Key::DownArrow), k(Key::LeftArrow), k(Key::RightArrow));
     let enter = key == "\n" || key == "\r";
     let arrow = [&up, &down, &left, &right].iter().any(|a| a.as_str() == key);
+    let ui = ui();
+    if !arrow && !enter && tv_search_page(&ui) && !ui.get_sources_open() && !ui.get_about_open() {
+        if key == SharedString::from(Key::Backspace).as_str() {
+            tv_key("delete");
+            return true;
+        }
+        let mut chars = key.chars();
+        if let (Some(c), None) = (chars.next(), chars.next())
+            && (c.is_alphanumeric() || c == ' ')
+        {
+            tv_key(if c == ' ' { "space".to_string() } else { c.to_lowercase().to_string() }.as_str());
+            return true;
+        }
+    }
     if !arrow && !enter {
         return false;
     }
-    let ui = ui();
     let nav = ui.global::<Nav>();
     // Windows over the page: About closes with OK; the add/edit form has text fields, which take
     // the keys themselves; Settings has its own focus.
@@ -2452,12 +3223,24 @@ fn nav_key(key: &str) -> bool {
     if !nav.get_active() {
         // First key press only reveals the focus, on the content (never straight into search).
         nav.set_active(true);
-        if ui.get_screen() == "home" && nav.get_zone() != "content" {
+        if tv_search_page(&ui) {
+            set_focus(&ui, "keys", 0, 0);
+        } else if ui.get_screen() == "home" && nav.get_zone() != "content" {
             set_focus(&ui, "content", 0, 0);
         }
         return true;
     }
     let (zone, row, col) = (nav.get_zone(), nav.get_row(), nav.get_col());
+    if zone == "music" {
+        return music_nav(&ui, col, key, enter);
+    }
+    if ui.get_now_playing_open() {
+        if zone != "np" {
+            set_focus(&ui, "np", 0, 1);
+            return true;
+        }
+        return np_nav(&ui, row, col, key, enter);
+    }
     match ui.get_screen().as_str() {
         "home" => home_nav(&ui, &zone, row, col, key, enter),
         "detail" => detail_nav(&ui, row, col, key, enter),
@@ -2483,6 +3266,7 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         let last = libraries + 2; // 0 search, 1 Home, 2.. libraries, then Sources
         if enter {
             match row {
+                0 if ui.global::<Theme>().get_tv() => open_tv_search(),
                 0 => ui.global::<Nav>().set_search_request(ui.global::<Nav>().get_search_request() + 1),
                 1 => select_library(-1),
                 r if r == last => shares::open_sources(),
@@ -2496,13 +3280,22 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         } else if is(Key::DownArrow) {
             set_focus(ui, "side", (row + 1).min(last), 0);
         } else if is(Key::RightArrow) {
-            set_focus(ui, "content", 0, 0);
+            if tv_search_page(ui) {
+                set_focus(ui, "keys", 0, 0);
+            } else {
+                set_focus(ui, "content", 0, 0);
+            }
         }
         return true;
     }
+    if zone == "keys" {
+        return keys_nav(ui, row, col, key, enter);
+    }
 
     let to_side = |ui: &AppWindow| {
-        if !compact {
+        if tv_search_page(ui) {
+            set_focus(ui, "keys", 0, 5);
+        } else if !compact {
             set_focus(ui, "side", if selected >= 0 { selected + 2 } else { 1 }, 0);
         }
     };
@@ -2537,6 +3330,8 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
         } else if is(Key::UpArrow) {
             let r = (row - 1).max(0);
             set_focus(ui, "content", r, col.min(lens[r as usize].0 - 1));
+        } else if is(Key::DownArrow) && row + 1 >= lens.len() as i32 {
+            enter_music_bar(ui, "content", row, col);
         } else if is(Key::DownArrow) {
             let r = (row + 1).min(lens.len() as i32 - 1);
             set_focus(ui, "content", r, col.min(lens[r as usize].0 - 1));
@@ -2549,10 +3344,26 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     }
 
     // A library grid or search results.
+    let has_tabs = selected >= 0 && ui.get_grid_tabs().row_count() > 0;
+    if zone == "tabs" {
+        let n = ui.get_grid_tabs().row_count() as i32;
+        if enter {
+            select_tab(col);
+        } else if is(Key::LeftArrow) {
+            if col == 0 { to_side(ui) } else { set_focus(ui, "tabs", 0, col - 1) }
+        } else if is(Key::RightArrow) {
+            set_focus(ui, "tabs", 0, (col + 1).min(n - 1));
+        } else if is(Key::DownArrow) && with_models(|m| m.grid.row_count()) > 0 {
+            set_focus(ui, "content", 0, 0);
+        }
+        return true;
+    }
     let ids: Vec<SharedString> = with_models(|m| m.grid.iter().map(|p| p.id).collect());
     if ids.is_empty() {
         if is(Key::LeftArrow) {
             to_side(ui);
+        } else if is(Key::UpArrow) && has_tabs {
+            set_focus(ui, "tabs", 0, ui.get_grid_tab());
         }
         return true;
     }
@@ -2562,8 +3373,12 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     let go = |ui: &AppWindow, i: i32| set_focus(ui, "content", i / cols, i % cols);
     if enter {
         open_item(ids[idx as usize].to_string());
+    } else if is(Key::UpArrow) && idx < cols && has_tabs {
+        set_focus(ui, "tabs", 0, ui.get_grid_tab());
     } else if is(Key::UpArrow) {
         go(ui, if idx >= cols { idx - cols } else { idx });
+    } else if is(Key::DownArrow) && idx / cols == last / cols {
+        enter_music_bar(ui, "content", row, col);
     } else if is(Key::DownArrow) {
         go(ui, (idx + cols).min(last));
     } else if is(Key::LeftArrow) {
@@ -2591,6 +3406,7 @@ fn settings_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter
             Some(_) if r == confirm => 2,
             Some(s) if s.kind == "plex" => 1,
             Some(_) => 2,
+            None if ui.get_can_tv_mode() => 4,
             None => 3,
         }
     };
@@ -2622,6 +3438,7 @@ fn settings_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter
                     ui.invoke_refresh();
                 }
                 1 => ui.set_about_open(true),
+                2 if ui.get_can_tv_mode() => toggle_tv_mode(),
                 _ => shares::new_source(),
             },
         }
@@ -2654,7 +3471,9 @@ fn detail_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> boo
     // Wide layouts put Play above the other actions (Trailer, watched, …): Down and Up move
     // between them before leaving the row.
     let wide = ui.window().size().to_logical(ui.window().scale_factor()).width >= 720.0;
-    let play_on_top = wide && rows[row as usize].0 == DetailRow::Actions && !ui.get_play_label().is_empty() && len > 1;
+    // (Albums and artists have their buttons in one row.)
+    let music = matches!(ui.get_detail_kind().as_str(), "album" | "artist" | "playlist");
+    let play_on_top = wide && !music && rows[row as usize].0 == DetailRow::Actions && !ui.get_play_label().is_empty() && len > 1;
     if enter {
         detail_activate(ui, rows[row as usize].0, row, col, &rows);
     } else if play_on_top && is(Key::DownArrow) && col == 0 {
@@ -2669,6 +3488,8 @@ fn detail_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> boo
         }
         if r >= 0 && (r as usize) < rows.len() {
             set_focus(ui, "detail", r, col.min(rows[r as usize].1 as i32 - 1));
+        } else if step == 1 {
+            enter_music_bar(ui, "detail", row, col);
         }
     } else if is(Key::LeftArrow) {
         set_focus(ui, "detail", row, (col - 1).max(0));
@@ -2685,6 +3506,9 @@ fn detail_activate(ui: &AppWindow, kind: DetailRow, row: i32, col: i32, rows: &[
             let mut actions: Vec<fn()> = Vec::new();
             if !ui.get_play_label().is_empty() {
                 actions.push(play_detail);
+            }
+            if ui.get_detail_can_shuffle() {
+                actions.push(shuffle_detail);
             }
             if ui.get_detail_can_trailer() {
                 actions.push(play_trailer);
@@ -2793,6 +3617,14 @@ fn settings_closed() {
 /// search results and library pages go back to Home. False when there's nothing to go back to.
 fn go_back() -> bool {
     let ui = ui();
+    if ui.global::<Nav>().get_zone() == "music" {
+        leave_music_bar();
+        return true;
+    }
+    if ui.get_now_playing_open() {
+        now_playing(false);
+        return true;
+    }
     if ui.get_about_open() {
         ui.set_about_open(false);
     } else if ui.get_add_source_open() {
@@ -2803,10 +3635,12 @@ fn go_back() -> bool {
         } else {
             ui.set_sources_open(false);
         }
+    } else if tv_search_page(&ui) && ui.global::<Nav>().get_zone() == "content" {
+        set_focus(&ui, "keys", 0, 0);
     } else if ui.get_screen() == "home" && ui.get_selected_library() == -2 {
         ui.set_search_text(SharedString::new());
         enter_home();
-    } else if ui.get_screen() == "home" && ui.get_selected_library() >= 0 {
+    } else if ui.get_screen() == "home" && (ui.get_selected_library() >= 0 || ui.get_selected_library() == COLLECTION_PAGE) {
         select_library(-1);
     } else if ui.get_screen() == "home" && ui.global::<Nav>().get_active() {
         // Like TV apps: Back goes to the top of Home, then to the menu, and only then leaves.
@@ -2836,7 +3670,8 @@ fn escape() {
         "player" => {
             if !ps.get_panel().is_empty() {
                 ps.set_panel(SharedString::new());
-            } else if ps.get_fullscreen() {
+            } else if ps.get_fullscreen() && !ui.global::<Theme>().get_tv() {
+                // TV mode stays full screen; Escape leaves the film instead.
                 toggle_fullscreen();
             } else {
                 stop_playback();
@@ -2876,6 +3711,8 @@ fn android_main(app: slint::android::AndroidApp) {
     if let Err(e) = run() {
         eprintln!("encheo: {e}");
     }
+    // The app closed: its music stopped with it.
+    android_media::stop();
 }
 
 #[cfg(target_os = "android")]
@@ -2905,14 +3742,81 @@ fn fit_tv_scale(ui: &AppWindow) {
         if width <= 0.0 {
             return;
         }
-        ui.global::<Theme>().set_tv(true);
+        if !ui.global::<Theme>().get_tv() {
+            ui.global::<Theme>().set_tv(true);
+            // Home may have loaded before the TV was recognised: TV rows have wide cards.
+            if ui.get_screen() == "home" && ui.get_selected_library() == -1 && !ui.get_loading() {
+                enter_home();
+            }
+        }
         let want = (width / 1280.0).max(1.0);
         if (ui.window().scale_factor() - want).abs() > 0.01 {
-            ui.window().dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: want });
+            set_scale(ui, want);
         }
     }
-    #[cfg(not(target_os = "android"))]
+    // Desktop TV mode: the same 1280-point-wide layout, so it reads from the sofa too.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let native = NATIVE_SCALE.get();
+        if ui.global::<Theme>().get_tv() {
+            let width = ui.window().size().width as f32;
+            if width <= 0.0 {
+                return;
+            }
+            let native = native.unwrap_or_else(|| {
+                let n = ui.window().scale_factor();
+                NATIVE_SCALE.set(Some(n));
+                n
+            });
+            let want = (width / 1280.0).max(native);
+            if (ui.window().scale_factor() - want).abs() > 0.01 {
+                set_scale(ui, want);
+            }
+        } else if let Some(n) = native {
+            NATIVE_SCALE.set(None);
+            if (ui.window().scale_factor() - n).abs() > 0.01 {
+                set_scale(ui, n);
+            }
+        }
+    }
+    #[cfg(target_os = "ios")]
     let _ = ui;
+}
+
+/// A new scale, and the window's size in points to go with it (the layout follows the size;
+/// without it a layout made at the old scale can stay, drawn too small).
+#[cfg(not(target_os = "ios"))]
+fn set_scale(ui: &AppWindow, scale: f32) {
+    use slint::platform::WindowEvent;
+    ui.window().dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale });
+    ui.window().dispatch_event(WindowEvent::Resized { size: ui.window().size().to_logical(scale) });
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+thread_local! {
+    /// The screen's own scale, from before TV mode enlarged it.
+    static NATIVE_SCALE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Desktop: TV mode on or off. TV mode is full screen; it's remembered for the next start.
+fn toggle_tv_mode() {
+    let ui = ui();
+    let on = !ui.global::<Theme>().get_tv();
+    ui.global::<Theme>().set_tv(on);
+    ui.window().set_fullscreen(on);
+    ps(&ui).set_fullscreen(on);
+    ui.set_sources_open(false);
+    with_state(|s| {
+        s.session.prefs.tv_mode = on;
+        s.session.save();
+    });
+    if on {
+        ui.global::<Nav>().set_active(true);
+        set_focus(&ui, "content", 0, 0);
+    }
+    if ui.get_screen() == "home" && ui.get_selected_library() == -1 {
+        enter_home(); // TV rows have wide cards
+    }
 }
 
 /// Start the app and run until its window closes.
@@ -2965,6 +3869,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.global::<PlayerState>().set_window_modes(cfg!(not(any(target_os = "android", target_os = "ios"))));
     UI.with(|u| *u.borrow_mut() = Some(ui.as_weak()));
     with_state(|s| s.session = Session::load());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        ui.set_can_tv_mode(true);
+        if with_state(|s| s.session.prefs.tv_mode) {
+            ui.global::<Theme>().set_tv(true);
+            ui.window().set_fullscreen(true);
+            ui.global::<PlayerState>().set_fullscreen(true);
+        }
+    }
     shares::sync_configs();
     backend::load_jf_servers();
 
@@ -2976,20 +3889,26 @@ pub fn run() -> Result<(), slint::PlatformError> {
         grid: Rc::new(VecModel::default()),
         albums: Rc::new(VecModel::default()),
         tracks: Rc::new(VecModel::default()),
+        songs: Rc::new(VecModel::default()),
+        queue: Rc::new(VecModel::default()),
         people: Rc::new(VecModel::default()),
         related: Rc::new(VecModel::default()),
         seasons: Rc::new(VecModel::default()),
+        seasons_watched: Rc::new(VecModel::default()),
         episodes: Rc::new(VecModel::default()),
     };
     ui.set_libraries(ModelRc::from(models.libraries.clone()));
     ui.set_continue_watching(ModelRc::from(models.continue_watching.clone()));
     ui.set_home_rows(ModelRc::from(models.home_rows.clone()));
+    ui.set_songs(ModelRc::from(models.songs.clone()));
+    ui.set_music_queue(ModelRc::from(models.queue.clone()));
     ui.set_grid(ModelRc::from(models.grid.clone()));
     ui.set_albums(ModelRc::from(models.albums.clone()));
     ui.set_tracks(ModelRc::from(models.tracks.clone()));
     ui.set_people(ModelRc::from(models.people.clone()));
     ui.set_related(ModelRc::from(models.related.clone()));
     ui.set_seasons(ModelRc::from(models.seasons.clone()));
+    ui.set_seasons_watched(ModelRc::from(models.seasons_watched.clone()));
     ui.set_episodes(ModelRc::from(models.episodes.clone()));
     MODELS.with(|m| *m.borrow_mut() = Some(models));
 
@@ -3186,6 +4105,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     ui.on_music_close(music_close);
+    ui.on_music_repeat_cycle(cycle_repeat);
+    ui.on_shuffle_detail(shuffle_detail);
+    ui.on_select_tab(select_tab);
+    ui.on_now_playing(now_playing);
+    ui.on_lyrics_toggled(|| music_tick(&self::ui()));
+    ui.on_music_jump(|id| music_jump(&id));
     ui.on_music_seek_to(|t| {
         if let Some(p) = player() {
             p.seek_to(t as f64);
@@ -3205,6 +4130,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.global::<Nav>().on_key(|k| nav_key(k.as_str()));
     ui.global::<Nav>().on_back(go_back);
     ui.global::<Nav>().on_dialog_closed(settings_closed);
+    ui.global::<Nav>().on_tv_search(open_tv_search);
+    ui.global::<Nav>().on_tv_key(|k| tv_key(k.as_str()));
     ui.global::<Nav>().on_leave_search(|| {
         hide_keyboard();
         let ui = crate::ui();
@@ -3215,6 +4142,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     ui.on_refresh(refresh);
+    ui.on_tv_mode(toggle_tv_mode);
 
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);

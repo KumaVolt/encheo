@@ -6,8 +6,12 @@ Answers the endpoints the app uses with Plex-shaped JSON; artwork comes from mak
 folder. Nothing plays: there are no media files.
 """
 
+import io
 import json
+import math
+import struct
 import sys
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -56,6 +60,41 @@ def trailer(key):
     }]
 
 
+
+_TONE = None
+
+
+def tone(seconds=40, rate=22050):
+    """A soft 220 Hz tone as a WAV file (made once)."""
+    global _TONE
+    if _TONE is None:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(b"".join(struct.pack("<h", int(2000 * math.sin(2 * math.pi * 220 * i / rate)))
+                                   for i in range(seconds * rate)))
+        _TONE = buf.getvalue()
+    return _TONE
+
+
+def section_hubs(section):
+    """Plex's suggested rows for a library (/hubs/sections/<key>): Top Rated and a genre row."""
+    kind = {"1": "movie", "2": "show"}.get(section)
+    if not kind:
+        return []
+    found = [i for i in library.ITEMS.values() if i["type"] == kind]
+    by_rating = sorted(found, key=lambda i: -i.get("audienceRating", 0))
+    genre = found[0]["Genre"][0]["tag"]
+    in_genre = [i for i in found if any(g["tag"] == genre for g in i.get("Genre", []))]
+    word = "Movies" if kind == "movie" else "TV"
+    return [
+        {"hubIdentifier": f"{kind}.recentlyadded.{section}", "title": "Recently Added", "Metadata": found},
+        {"hubIdentifier": f"{kind}.toprated.{section}", "title": f"Top Rated {word}", "Metadata": by_rating},
+        {"hubIdentifier": f"{kind}.moreingenre.{section}", "title": f"More in {genre}", "Metadata": in_genre or found},
+    ]
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
@@ -72,10 +111,24 @@ class Handler(BaseHTTPRequestHandler):
         if parts[:2] == ["library", "sections"] and len(parts) == 4:
             section = parts[2]
             if parts[3] == "all":
+                kind = library.MUSIC_TYPES.get(query.get("type", [""])[0])
+                if kind and section == "3":
+                    items = sorted((i for i in library.ITEMS.values() if i["type"] == kind), key=sort_title)
+                    return self.json(metadata(items, start, size))
                 items = sorted((library.ITEMS[k] for k in library.SECTION_ITEMS.get(section, [])), key=sort_title)
                 return self.json(metadata(items, start, size))
+            if parts[3] == "collections":
+                found = list(library.COLLECTIONS.values()) if section == "1" else []
+                return self.json(metadata(found))
             if parts[3] == "recentlyAdded":
                 return self.json(metadata(library.recently_added(section), start, size))
+        if parts[:2] == ["library", "collections"] and len(parts) == 4 and parts[3] == "children":
+            films = library.COLLECTION_ITEMS.get(parts[2], [])
+            return self.json(metadata(sorted((library.ITEMS[k] for k in films), key=lambda i: i["year"])))
+        if url.path == "/playlists":
+            return self.json(metadata(library.PLAYLISTS))
+        if parts[:1] == ["playlists"] and len(parts) == 3 and parts[2] == "items":
+            return self.json(metadata([library.ITEMS[k] for k in library.PLAYLIST_TRACKS]))
         if url.path == "/library/onDeck":
             return self.json(metadata(library.on_deck()))
         if parts[:2] == ["library", "metadata"] and len(parts) >= 3 and parts[2] in library.ITEMS:
@@ -92,11 +145,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(related(parts[2]))
         if url.path == "/hubs/search":
             q = query.get("query", [""])[0].lower()
-            found = [i for i in library.ITEMS.values() if q in i["title"].lower() and i["type"] in ("movie", "show", "album")]
+            found = [i for i in library.ITEMS.values() if q in i["title"].lower() and i["type"] in ("movie", "show", "album", "episode")]  # Plex lists episodes too
             return self.json(container(Hub=[{"Metadata": found[:20]}]))
+        if parts[:2] == ["hubs", "sections"] and len(parts) == 3:
+            return self.json(container(Hub=section_hubs(parts[2])))
         if url.path.startswith("/:/"):  # progress reports, watched/unwatched
             return self.json(container())
+        if parts[:2] == ["library", "streams"] and len(parts) == 3 and parts[2].startswith("lyrics-"):
+            return self.json(container(size=1, Lyrics=[library.lyrics(parts[2].removeprefix("lyrics-"))]))
+        if parts[:2] == ["library", "parts"] and url.path.endswith(".mp3"):
+            return self.audio()
         self.send_error(404)
+
+    def audio(self):
+        """Every song is the same quiet 40-second tone, so music actually plays (and can be
+        paused, skipped and controlled from Android's lock screen) in tests."""
+        data = tone()
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def json(self, body):
         data = json.dumps(body).encode()

@@ -42,6 +42,9 @@ pub struct Prefs {
     pub auto_skip: bool,
     #[serde(default = "one")]
     pub sub_scale: f64,
+    /// Desktop: the TV look, full screen (a computer connected to a TV). Android TV always has it.
+    #[serde(default)]
+    pub tv_mode: bool,
 }
 
 fn one() -> f64 {
@@ -50,7 +53,7 @@ fn one() -> f64 {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { auto_skip: false, sub_scale: 1.0 }
+        Self { auto_skip: false, sub_scale: 1.0, tv_mode: false }
     }
 }
 

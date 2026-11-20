@@ -1,6 +1,16 @@
 fn main() {
     slint_build::compile("ui/app.slint").expect("compile ui");
 
+    // Windows: the .exe carries the icon Explorer, the taskbar and shortcuts show.
+    #[cfg(windows)]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=../../packaging/windows/encheo.ico");
+        winresource::WindowsResource::new()
+            .set_icon("../../packaging/windows/encheo.ico")
+            .compile()
+            .expect("embed the Windows icon");
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
         return link_ios();
     }

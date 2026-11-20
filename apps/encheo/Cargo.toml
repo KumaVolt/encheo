@@ -14,11 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 dirs = "7.0.0"
-encheo-discovery = { version = "0.4.1", path = "../../crates/discovery" }
-encheo-jellyfin = { version = "0.4.1", path = "../../crates/jellyfin" }
-encheo-plex = { version = "0.4.1", path = "../../crates/plex" }
-encheo-sublang = { version = "0.4.1", path = "../../crates/sublang" }
-encheo-vfs = { version = "0.4.1", path = "../../crates/vfs" }
+encheo-discovery = { version = "0.5.0", path = "../../crates/discovery" }
+encheo-jellyfin = { version = "0.5.0", path = "../../crates/jellyfin" }
+encheo-plex = { version = "0.5.0", path = "../../crates/plex" }
+encheo-sublang = { version = "0.5.0", path = "../../crates/sublang" }
+encheo-vfs = { version = "0.5.0", path = "../../crates/vfs" }
 glow = "0.18.0"
 libmpv2 = "6.0.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
@@ -53,39 +53,6 @@ raw-window-handle = "0.6.2"
 [build-dependencies]
 slint-build = "1.18"
 
-# Android packaging (cargo-apk). libmpv.so comes from scripts/android-libs.sh.
-[package.metadata.android]
-package = "app.encheo"
-apk_name = "encheo"
-build_targets = ["aarch64-linux-android"]
-runtime_libs = "android-libs"
-
-[package.metadata.android.sdk]
-min_sdk_version = 26
-target_sdk_version = 35
-
-[[package.metadata.android.uses_permission]]
-name = "android.permission.INTERNET"
-
-# Runs on phones and TVs: neither a touchscreen nor the TV feature is required.
-[[package.metadata.android.uses_feature]]
-name = "android.hardware.touchscreen"
-required = false
-
-[[package.metadata.android.uses_feature]]
-name = "android.software.leanback"
-required = false
-
-[package.metadata.android.application]
-label = "Encheo"
-# Local Plex servers are often reached over plain http://<ip>:32400.
-uses_cleartext_traffic = true
-
-[package.metadata.android.application.activity]
-orientation = "unspecified"
-config_changes = "orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode"
-
-# Show up in the phone launcher and in the Android TV home screen.
-[[package.metadata.android.application.activity.intent_filter]]
-actions = ["android.intent.action.MAIN"]
-categories = ["android.intent.category.LAUNCHER", "android.intent.category.LEANBACK_LAUNCHER"]
+# The .exe's icon (Explorer, the taskbar, shortcuts).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

@@ -59,7 +59,7 @@ pub struct Server {
     prefix: String,
 }
 
-const FIELDS: &str = "Overview,Genres,People,MediaSources,MediaStreams,ProviderIds,OfficialRating,CriticRating,CommunityRating,ProductionYear,DateCreated,ChildCount,RecursiveItemCount,ParentId,Path,Taglines";
+const FIELDS: &str = "Overview,Genres,ProductionLocations,People,MediaSources,MediaStreams,ProviderIds,OfficialRating,CriticRating,CommunityRating,ProductionYear,DateCreated,ChildCount,RecursiveItemCount,ParentId,Path,Taglines";
 
 fn http() -> reqwest::Client {
     encheo_plex::with_platform_roots(reqwest::Client::builder())
@@ -257,6 +257,31 @@ impl Server {
         .await
     }
 
+    /// More rows for Home, like Plex's suggestions: Recently Released, Top Rated, and a random
+    /// pick of what hasn't been watched.
+    pub async fn discover(&self, library_key: &str, kind: &str) -> Result<Vec<(String, Vec<Item>)>> {
+        let what = if kind == "show" { "TV" } else { "Movies" };
+        let mut rows = Vec::new();
+        for (title, query) in [
+            (format!("Recently Released {what}"), "SortBy=PremiereDate&SortOrder=Descending"),
+            (format!("Top Rated {what}"), "SortBy=CommunityRating&SortOrder=Descending"),
+            (format!("Unwatched {what}"), "SortBy=Random&IsPlayed=false"),
+        ] {
+            let items = self
+                .items(&format!(
+                    "/Users/{}/Items?ParentId={}&Recursive=true&IncludeItemTypes={}&{query}&Limit=20&Fields={FIELDS}",
+                    self.uid(),
+                    self.raw_id(library_key),
+                    Self::library_types(kind)
+                ))
+                .await?;
+            if items.len() >= 4 {
+                rows.push((title, items));
+            }
+        }
+        Ok(rows)
+    }
+
     /// Partly watched items, then the next episode of shows in progress.
     pub async fn on_deck(&self) -> Result<Vec<Item>> {
         let mut out = self
@@ -317,6 +342,46 @@ impl Server {
             .collect())
     }
 
+    /// A music library by tab: 0 artists, 1 albums, 2 songs, 3 playlists (all of the user's).
+    pub async fn music_items(&self, library_key: &str, tab: i32, start: u32, size: u32) -> Result<encheo_plex::Page> {
+        let (uid, parent) = (self.uid(), self.raw_id(library_key));
+        let path = match tab {
+            0 => format!(
+                "/Artists/AlbumArtists?ParentId={parent}&UserId={uid}&SortBy=SortName&StartIndex={start}&Limit={size}&Fields={FIELDS}"
+            ),
+            3 => format!(
+                "/Users/{uid}/Items?IncludeItemTypes=Playlist&Recursive=true&SortBy=SortName&StartIndex={start}&Limit={size}&Fields={FIELDS}"
+            ),
+            t => format!(
+                "/Users/{uid}/Items?ParentId={parent}&Recursive=true&IncludeItemTypes={}&SortBy=SortName&SortOrder=Ascending&StartIndex={start}&Limit={size}&Fields={FIELDS}",
+                if t == 2 { "Audio" } else { "MusicAlbum" }
+            ),
+        };
+        let v = self.json(self.get(&path)).await?;
+        let page: ItemsPage = serde_json::from_value(v).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(encheo_plex::Page { total: page.total, items: page.items.iter().map(|i| self.to_item(i)).collect() })
+    }
+
+    /// The songs in a playlist, in its order.
+    pub async fn playlist_items(&self, id: &str) -> Result<Vec<Item>> {
+        self.items(&format!("/Playlists/{}/Items?UserId={}&Fields={FIELDS}", self.raw_id(id), self.uid())).await
+    }
+
+    /// Collections ("box sets"). Jellyfin keeps them for the whole server, not per library.
+    pub async fn collections(&self) -> Result<Vec<Item>> {
+        self.items(&format!("/Users/{}/Items?IncludeItemTypes=BoxSet&Recursive=true&SortBy=SortName&Fields={FIELDS}", self.uid())).await
+    }
+
+    /// The titles in a collection, oldest first.
+    pub async fn collection_items(&self, id: &str) -> Result<Vec<Item>> {
+        self.items(&format!(
+            "/Users/{}/Items?ParentId={}&SortBy=ProductionYear,SortName&Fields={FIELDS}",
+            self.uid(),
+            self.raw_id(id)
+        ))
+        .await
+    }
+
     /// Seasons of a show, episodes of a season, albums of an artist, tracks of an album.
     pub async fn children(&self, id: &str) -> Result<Vec<Item>> {
         let raw = self.raw_id(id);
@@ -341,6 +406,16 @@ impl Server {
         self.items(&format!("/Shows/{}/Episodes?UserId={}&Fields={FIELDS}", self.raw_id(show_id), self.uid())).await
     }
 
+    /// A song's words (Jellyfin 10.9+: from an .lrc/.txt file next to the song, or a lyrics
+    /// plugin). None when it has none, or the server is older.
+    pub async fn lyrics(&self, id: &str) -> Result<Option<encheo_plex::Lyrics>> {
+        match self.json(self.get(&format!("/Audio/{}/Lyrics", self.raw_id(id)))).await {
+            Ok(v) => Ok(parse_lyrics(&v)),
+            Err(Error::Status(404)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn related(&self, id: &str) -> Result<Vec<Item>> {
         self.items(&format!("/Items/{}/Similar?UserId={}&Limit=20&Fields={FIELDS}", self.raw_id(id), self.uid())).await
     }
@@ -348,7 +423,7 @@ impl Server {
     pub async fn search(&self, query: &str) -> Result<Vec<Item>> {
         let q: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
         self.items(&format!(
-            "/Users/{}/Items?SearchTerm={q}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,MusicArtist,MusicAlbum,Audio&Limit=40&Fields={FIELDS}",
+            "/Users/{}/Items?SearchTerm={q}&Recursive=true&IncludeItemTypes=Movie,Series,MusicArtist,MusicAlbum,Audio&Limit=40&Fields={FIELDS}",
             self.uid()
         ))
         .await
@@ -484,6 +559,8 @@ impl Server {
             "MusicAlbum" => ItemKind::Album,
             "MusicArtist" => ItemKind::Artist,
             "Audio" => ItemKind::Track,
+            "BoxSet" => ItemKind::Collection,
+            "Playlist" => ItemKind::Playlist,
             "Folder" | "CollectionFolder" => ItemKind::Folder,
             _ => ItemKind::Other,
         };
@@ -543,6 +620,7 @@ impl Server {
             item.parent_title = s("AlbumArtist");
         }
         item.genres = v["Genres"].as_array().into_iter().flatten().filter_map(|g| g.as_str()).map(|g| Tag { tag: g.into(), thumb: None }).collect();
+        item.countries = v["ProductionLocations"].as_array().into_iter().flatten().filter_map(|g| g.as_str()).map(|g| Tag { tag: g.into(), thumb: None }).collect();
         for p in v["People"].as_array().into_iter().flatten() {
             let name = p["Name"].as_str().unwrap_or_default().to_string();
             let thumb = p["Id"].as_str().and_then(|pid| self.image(pid, "Primary", p["PrimaryImageTag"].as_str()));
@@ -628,6 +706,23 @@ fn to_media(ms: &Value, base: &str) -> Media {
     }
 }
 
+/// `{"Metadata":{…},"Lyrics":[{"Text":"…","Start":ticks}]}`; `Start` is missing when not synced.
+fn parse_lyrics(v: &Value) -> Option<encheo_plex::Lyrics> {
+    let lines = v["Lyrics"].as_array()?;
+    let synced = !lines.is_empty() && lines.iter().all(|l| l["Start"].is_number());
+    let lines: Vec<encheo_plex::LyricLine> = lines
+        .iter()
+        .map(|l| encheo_plex::LyricLine {
+            start: if synced { l["Start"].as_f64().unwrap_or(0.0) / 10_000_000.0 } else { 0.0 },
+            text: l["Text"].as_str().unwrap_or_default().trim().to_string(),
+        })
+        .collect();
+    if lines.iter().all(|l| l.text.is_empty()) {
+        return None;
+    }
+    Some(encheo_plex::Lyrics { lines, synced, credit: None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +784,17 @@ mod tests {
         let sub = i.primary_part().unwrap().streams.iter().find(|s| s.stream_type == 3).unwrap();
         assert_eq!(sub.index, None);
         assert_eq!(s.subtitle_url(sub).unwrap(), "http://jf:8096/Videos/e1/ms1/Subtitles/2/0/Stream.srt?api_key=tok");
+    }
+
+    #[test]
+    fn lyrics() {
+        let v = serde_json::json!({"Metadata":{},"Lyrics":[{"Text":"One","Start":41_700_000},{"Text":"Two ","Start":71_000_000}]});
+        let l = parse_lyrics(&v).unwrap();
+        assert!(l.synced);
+        assert_eq!(l.lines[0].start, 4.17);
+        assert_eq!(l.lines[1].text, "Two");
+        let v = serde_json::json!({"Lyrics":[{"Text":"Plain"}]});
+        assert!(!parse_lyrics(&v).unwrap().synced);
+        assert!(parse_lyrics(&serde_json::json!({"Lyrics":[]})).is_none());
     }
 }
