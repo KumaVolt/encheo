@@ -328,3 +328,18 @@ fn external_ids() {
     assert_eq!(item.external_id("tvdb"), None);
     assert_eq!(item.external_id("tm"), None);
 }
+
+#[test]
+fn person_ids() {
+    // A server's cast: a tag number and the catalogue id in tagKey.
+    let r: Role = serde_json::from_str(r#"{"id": 13815, "tag": "Aaron Taylor-Johnson", "tagKey": "5d77682a880197001ec9141f", "role": "Jamie"}"#).unwrap();
+    assert_eq!(r.person_id(), Some("5d77682a880197001ec9141f"));
+    // A catalogue title's cast: the catalogue id itself.
+    let r: Role = serde_json::from_str(r#"{"id": "5d77682685719b001f3a0b79", "tag": "Leonardo DiCaprio", "role": "Dom Cobb"}"#).unwrap();
+    assert_eq!(r.person_id(), Some("5d77682685719b001f3a0b79"));
+    // Only a server's tag number: no page.
+    let t: Tag = serde_json::from_str(r#"{"id": 74327, "tag": "Danny Boyle"}"#).unwrap();
+    assert_eq!(t.person_id(), None);
+    let t: Tag = serde_json::from_str(r#"{"tag": "Drama"}"#).unwrap();
+    assert_eq!(t.person_id(), None);
+}

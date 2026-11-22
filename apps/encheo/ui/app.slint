@@ -39,8 +39,18 @@ export struct HomeRow {
 }
 
 export struct Person {
+    id: string,        // their page (people.rs); empty when the source has none
     name: string,
     role: string,
+    art-url: string,
+    image: image,
+}
+
+// The top of a person's page: photo, name, born/died, biography.
+export struct PersonHeader {
+    name: string,
+    about: string,     // "Born 11 November 1974 in Los Angeles"
+    summary: string,
     art-url: string,
     image: image,
 }
@@ -236,6 +246,7 @@ export global Nav {
     in-out property <int> d-tracks: -1;
     in-out property <int> d-albums: -1;
     in-out property <int> d-related: -1;
+    in-out property <int> d-people: -1;
     // Arrow keys and Enter; returns whether the key was used.
     callback key(string) -> bool;
     // Back (Android's Back button): closes a window or leaves a page; false when there's
@@ -506,6 +517,9 @@ component Shelf inherits VerticalLayout {
     callback see-all-clicked();
     // Scrolled near the end: time to fetch the next titles.
     callback more();
+    // Home rows keep their sideways position when the page is rebuilt (lib.rs `scroll`).
+    in property <length> start-x;
+    callback scrolled-x(length);
     property <bool> on-screen: self.absolute-position.y < root.screen-h * 1.5 && self.absolute-position.y + self.height > -root.screen-h * 0.5;
     property <bool> near-end: root.on-screen && root.items.length > 0 && flick.width > 0
         && -flick.content-x + flick.width * 2 > root.items.length * (root.card-w + 22px);
@@ -541,6 +555,8 @@ component Shelf inherits VerticalLayout {
         content-width: root.items.length * (root.card-w + 22px) + 34px;
         animate content-x { duration: root.glide ? Theme.glide : 0ms; easing: ease-in-out; }
         flicked => { root.glide = false; }
+        init => { self.content-x = root.start-x; }
+        changed content-x => { root.scrolled-x(self.content-x); }
         for p[i] in root.items: PosterCard {
             x: 12px + i * (root.card-w + 22px);
             y: 12px;
@@ -1396,6 +1412,43 @@ component TrackRow inherits Rectangle {
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
+// A person's page: photo, name, when and where they were born, their biography.
+component PersonHead inherits HorizontalLayout {
+    in property <PersonHeader> data;
+    in property <length> pad;
+    padding-left: root.pad;
+    padding-right: root.pad;
+    padding-top: 8px;
+    padding-bottom: 6px;
+    spacing: 24px;
+    property <length> photo: root.width < 560px ? 96px : Theme.tv ? 170px : 150px;
+    VerticalLayout {
+        alignment: start;
+        Rectangle {
+            width: root.photo;
+            height: root.photo * 1.25;
+            border-radius: 16px;
+            clip: true;
+            background: Theme.card;
+            Icon { name: "person"; width: 48px; height: 48px; tint: Theme.tertiary; visible: pic.source.width == 0; }
+            pic := Image { width: parent.width; height: parent.height; source: root.data.image; image-fit: cover; }
+        }
+    }
+    VerticalLayout {
+        alignment: start;
+        spacing: 8px;
+        Text { text: root.data.name; color: Theme.text; font-size: Theme.tv ? 36px : 28px; font-weight: 800; wrap: word-wrap; }
+        if root.data.about != "": Text { text: root.data.about; color: Theme.secondary; font-size: Theme.tv ? 17px : 14px; wrap: word-wrap; }
+        if root.data.summary != "": Text {
+            text: root.data.summary;
+            color: Theme.text;
+            font-size: Theme.tv ? 17px : 14px;
+            wrap: word-wrap;
+            max-width: 760px;
+        }
+    }
+}
+
 component Home inherits Rectangle {
     in property <[LibraryEntry]> libraries;
     in property <int> selected;
@@ -1413,7 +1466,8 @@ component Home inherits Rectangle {
     callback select-tab(int);
     in property <[FilterChip]> filters;   // movie and TV libraries: Sort, Genre, …
     in property <[AzLetter]> az;          // sorted by title: the A–Z rail
-    in property <[HomeRow]> search-rows;  // search: suggestions under the results
+    in property <[HomeRow]> search-rows;  // search: suggestions under the results; a person's credits
+    in property <PersonHeader> person;     // a person's page (selected -4): above their rows
     callback filter-chip(int);
     property <length> tabs-h: (root.tabs.length > 0 || root.filters.length > 0) && root.selected >= 0 ? (Theme.tv ? 60px : 52px) : 0px;
     in-out property <string> search-text;
@@ -1426,6 +1480,13 @@ component Home inherits Rectangle {
     callback billboard-play();
     // Home row `i` was scrolled near its end.
     callback row-more(int);
+    // Where the page was scrolled to. Home is rebuilt each time it's shown (after a title's page,
+    // the player, …), so the positions live on the window and come back from there.
+    in-out property <length> shelf-y;
+    in-out property <length> grid-y;
+    in property <int> grid-reset;           // bumped when the grid gets new content: to the top
+    pure callback row-x(string) -> length;  // a Home row's sideways position, by its title
+    callback set-row-x(string, length);
     background: Theme.bg;
 
     // Phones and narrow windows: no sidebar; search and library chips across the top instead.
@@ -1527,6 +1588,11 @@ component Home inherits Rectangle {
             root.v-glide = false;
             root.scrolled = self.content-y < -40px;
         }
+        init => {
+            self.content-y = root.shelf-y;
+            root.scrolled = self.content-y < -40px;
+        }
+        changed content-y => { root.shelf-y = self.content-y; }
         shelves := VerticalLayout {
             padding-bottom: 32px + root.bottom-inset;
             if root.has-billboard && !root.tv-home: BillboardView {
@@ -1546,6 +1612,8 @@ component Home inherits Rectangle {
                     title: "Continue Watching";
                     items: root.continue-watching;
                     landscape: true;
+                    start-x: root.row-x(self.title);
+                    scrolled-x(x) => { root.set-row-x(self.title, x); }
                     screen-h: root.height;
                     focused-index: root.nav-content && Nav.row == root.bb-rows ? Nav.col : -1;
                     open(id) => { root.open(id); }
@@ -1561,6 +1629,8 @@ component Home inherits Rectangle {
                     landscape: row.landscape;
                     square: row.square;
                     see-all: row.library >= 0;
+                    start-x: root.row-x(row.title);
+                    scrolled-x(x) => { root.set-row-x(row.title, x); }
                     open(id) => { root.open(id); }
                     see-all-clicked => { root.select(row.library); }
                 }
@@ -1641,6 +1711,13 @@ component Home inherits Rectangle {
         changed az-row => { if (self.az-row >= 0 && self.az-row < root.az.length) { self.jump(root.az[self.az-row].index, true); } }
         init => { Nav.grid-cols = self.cols; }
         changed cols => { Nav.grid-cols = self.cols; }
+        // New content (another library, filter, sort, search): start at the top.
+        property <int> reset: root.grid-reset;
+        changed reset => {
+            self.glide = false;
+            grid-view.content-y = 0;
+            root.grid-y = 0;
+        }
         // Search: rows of suggestions follow the grid's rows, for the remote too.
         property <int> grid-rows: self.list ? root.songs.length : ceil(root.grid.length / self.cols);
         property <length> grid-h: self.grid-rows * (self.card-h + self.gap);
@@ -1669,6 +1746,8 @@ component Home inherits Rectangle {
             content-height: gridbox.grid-h + (root.search-rows.length > 0 ? srows.preferred-height + 24px : 0px) + gridbox.pad + root.bottom-inset;
             animate content-y { duration: gridbox.glide ? Theme.glide : 0ms; easing: ease-in-out; }
             flicked => { gridbox.glide = false; }
+            init => { self.content-y = root.grid-y; }
+            changed content-y => { root.grid-y = self.content-y; }
             if !gridbox.list: Rectangle {
                 for p[i] in root.grid: PosterCard {
                     x: gridbox.pad + mod(i, gridbox.cols) * (gridbox.card-w + gridbox.gap);
@@ -1686,6 +1765,10 @@ component Home inherits Rectangle {
                 height: self.preferred-height;
                 alignment: start;
                 spacing: 18px;
+                if root.selected == -4 && root.person.name != "": PersonHead {
+                    data: root.person;
+                    pad: 12px;
+                }
                 for row[ri] in root.search-rows: Shelf {
                     title: row.title;
                     items: row.items;
@@ -1892,8 +1975,15 @@ component RoundAction inherits Rectangle {
 
 component PersonCard inherits Rectangle {
     in property <Person> data;
+    in property <bool> focused;
+    callback clicked();
     width: 92px;
     height: 150px;
+    touch := TouchArea {
+        enabled: root.data.id != "";
+        mouse-cursor: self.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
     Rectangle {
         y: 0;
         width: 88px;
@@ -1902,8 +1992,10 @@ component PersonCard inherits Rectangle {
         border-radius: 14px;
         clip: true;
         background: Theme.card;
+        opacity: touch.has-hover && !root.focused ? 0.8 : 1;
         Icon { name: "person"; width: 36px; height: 36px; tint: Theme.tertiary; visible: photo.source.width == 0; }
         photo := Image { width: parent.width; height: parent.height; source: root.data.image; image-fit: cover; }
+        if root.focused: Rectangle { border-width: 3px; border-color: white; border-radius: 14px; }
     }
     Text { y: 96px; width: root.width; text: root.data.name; color: Theme.text; font-size: 13px; font-weight: 600; wrap: word-wrap; overflow: elide; height: 34px; }
     Text { y: 131px; width: root.width; text: root.data.role; color: Theme.secondary; font-size: 12px; overflow: elide; }
@@ -1967,6 +2059,7 @@ component Detail inherits Rectangle {
     callback toggle-watched();
     callback toggle-favourite();
     callback open(string);
+    callback open-person(string);   // a cast or crew card: their page
     callback play-track(string);
     callback select-season(int);
     callback play-episode(string);
@@ -2255,10 +2348,28 @@ component Detail inherits Rectangle {
                 padding-top: 40px;
                 spacing: 14px;
                 Text { text: "Cast and Crew"; color: Theme.text; font-size: 20px; font-weight: 700; }
-                Flickable {
+                cast-view := Flickable {
                     height: 152px;
                     content-width: root.people.length * 110px;
-                    for person[i] in root.people: PersonCard { x: i * 110px; data: person; }
+                    // The remote's card stays in view.
+                    property <int> focus-col: root.nav && Nav.d-people >= 0 && Nav.row == Nav.d-people ? Nav.col : -1;
+                    animate content-x { duration: Theme.glide; easing: ease-in-out; }
+                    changed focus-col => {
+                        if (self.focus-col >= 0) {
+                            root.reveal(self.absolute-position.y - 48px, self.height + 48px);
+                            if (self.focus-col * 110px < -self.content-x) {
+                                self.content-x = -(self.focus-col * 110px);
+                            } else if ((self.focus-col + 1) * 110px > -self.content-x + self.width) {
+                                self.content-x = -((self.focus-col + 1) * 110px - self.width + 20px);
+                            }
+                        }
+                    }
+                    for person[i] in root.people: PersonCard {
+                        x: i * 110px;
+                        data: person;
+                        focused: cast-view.focus-col == i;
+                        clicked => { root.open-person(person.id); }
+                    }
                 }
             }
             if root.related.length > 0: VerticalLayout {
@@ -2305,8 +2416,8 @@ component Detail inherits Rectangle {
 // ---------- Now playing (music) ----------
 
 // Now Playing: the cover, where the song is, the controls, and what's next (or the words). Remote
-// focus is zone "np": row 0 the controls (Previous, Play/Pause, Next, Repeat, Lyrics), then one row
-// per queued song, or per line of synced lyrics.
+// focus is zone "np": row 0 the controls (Previous, Play/Pause, Next, Shuffle, Repeat, Lyrics), then
+// one row per queued song, or per line of synced lyrics.
 component NpPanel inherits VerticalLayout {
     in property <string> title;
     in property <string> artist;
@@ -2317,6 +2428,7 @@ component NpPanel inherits VerticalLayout {
     in property <string> position-text;
     in property <string> duration-text;
     in property <int> repeat;
+    in property <bool> shuffle;
     in property <length> cover-size;
     in property <int> focus-col: -1;
     in property <bool> lyrics-open;
@@ -2324,6 +2436,7 @@ component NpPanel inherits VerticalLayout {
     callback next();
     callback prev();
     callback repeat-clicked();
+    callback shuffle-clicked();
     callback seek-to(float);
     callback lyrics();
     spacing: 18px;
@@ -2372,26 +2485,32 @@ component NpPanel inherits VerticalLayout {
             Text { text: root.duration-text; color: Theme.secondary; font-size: 12px; }
         }
     }
-    HorizontalLayout {
+    npc := HorizontalLayout {
         alignment: center;
-        spacing: root.width < 380px ? 8px : 18px;
-        VerticalLayout { alignment: center; IconButton { icon: "prev"; size: 48px; icon-size: 20px; focused: root.focus-col == 0; clicked => { root.prev(); } } }
-        VerticalLayout { alignment: center; IconButton { icon: root.paused ? "play" : "pause"; primary: true; size: 68px; icon-size: 28px; focused: root.focus-col == 1; clicked => { root.toggle(); } } }
-        VerticalLayout { alignment: center; IconButton { icon: "next"; size: 48px; icon-size: 20px; focused: root.focus-col == 2; clicked => { root.next(); } } }
+        // Six buttons: smaller on phones so they fit.
+        property <length> button: root.width < 420px ? 40px : 48px;
+        spacing: root.width < 380px ? 8px : root.width < 420px ? 12px : 18px;
+        VerticalLayout { alignment: center; IconButton { icon: "prev"; size: npc.button; icon-size: 20px; focused: root.focus-col == 0; clicked => { root.prev(); } } }
+        VerticalLayout { alignment: center; IconButton { icon: root.paused ? "play" : "pause"; primary: true; size: root.width < 420px ? 60px : 68px; icon-size: 28px; focused: root.focus-col == 1; clicked => { root.toggle(); } } }
+        VerticalLayout { alignment: center; IconButton { icon: "next"; size: npc.button; icon-size: 20px; focused: root.focus-col == 2; clicked => { root.next(); } } }
+        VerticalLayout {
+            alignment: center;
+            IconButton { icon: "shuffle"; active: root.shuffle; size: npc.button; icon-size: 20px; focused: root.focus-col == 3; clicked => { root.shuffle-clicked(); } }
+        }
         VerticalLayout {
             alignment: center;
             IconButton {
                 icon: root.repeat == 2 ? "repeat-one" : "repeat";
                 active: root.repeat > 0;
-                size: 48px;
+                size: npc.button;
                 icon-size: 20px;
-                focused: root.focus-col == 3;
+                focused: root.focus-col == 4;
                 clicked => { root.repeat-clicked(); }
             }
         }
         VerticalLayout {
             alignment: center;
-            IconButton { icon: "lyrics"; active: root.lyrics-open; size: 48px; icon-size: 20px; focused: root.focus-col == 4; clicked => { root.lyrics(); } }
+            IconButton { icon: "lyrics"; active: root.lyrics-open; size: npc.button; icon-size: 20px; focused: root.focus-col == 5; clicked => { root.lyrics(); } }
         }
     }
 }
@@ -2547,6 +2666,7 @@ component NowPlaying inherits Rectangle {
     in property <string> position-text;
     in property <string> duration-text;
     in property <int> repeat;
+    in property <bool> shuffle;
     in property <[Track]> queue;
     in property <int> current;
     in property <length> inset-top;
@@ -2560,6 +2680,7 @@ component NowPlaying inherits Rectangle {
     callback next();
     callback prev();
     callback repeat-clicked();
+    callback shuffle-clicked();
     callback seek-to(float);
     callback jump(string);
     callback close();
@@ -2590,9 +2711,9 @@ component NowPlaying inherits Rectangle {
             title: root.title; artist: root.artist; art: root.art; paused: root.paused;
             position: root.position; duration: root.duration;
             position-text: root.position-text; duration-text: root.duration-text;
-            repeat: root.repeat; focus-col: root.focus-col; lyrics-open: root.lyrics-open;
+            repeat: root.repeat; shuffle: root.shuffle; focus-col: root.focus-col; lyrics-open: root.lyrics-open;
             toggle => { root.toggle(); } next => { root.next(); } prev => { root.prev(); }
-            repeat-clicked => { root.repeat-clicked(); } seek-to(t) => { root.seek-to(t); }
+            repeat-clicked => { root.repeat-clicked(); } shuffle-clicked => { root.shuffle-clicked(); } seek-to(t) => { root.seek-to(t); }
             lyrics => { root.lyrics-clicked(); }
         }
         if !root.lyrics-open: NpQueue { horizontal-stretch: 1; queue: root.queue; current: root.current; focus-row: root.focus-row; jump(id) => { root.jump(id); } }
@@ -2618,9 +2739,9 @@ component NowPlaying inherits Rectangle {
             title: root.title; artist: root.artist; art: root.art; paused: root.paused;
             position: root.position; duration: root.duration;
             position-text: root.position-text; duration-text: root.duration-text;
-            repeat: root.repeat; focus-col: root.focus-col; lyrics-open: root.lyrics-open;
+            repeat: root.repeat; shuffle: root.shuffle; focus-col: root.focus-col; lyrics-open: root.lyrics-open;
             toggle => { root.toggle(); } next => { root.next(); } prev => { root.prev(); }
-            repeat-clicked => { root.repeat-clicked(); } seek-to(t) => { root.seek-to(t); }
+            repeat-clicked => { root.repeat-clicked(); } shuffle-clicked => { root.shuffle-clicked(); } seek-to(t) => { root.seek-to(t); }
             lyrics => { root.lyrics-clicked(); }
         }
         if !root.lyrics-open: NpQueue { vertical-stretch: 1; queue: root.queue; current: root.current; focus-row: root.focus-row; jump(id) => { root.jump(id); } }
@@ -2645,12 +2766,14 @@ component MiniPlayer inherits Rectangle {
     in property <string> position-text;
     in property <string> duration-text;
     in property <int> repeat;              // 0 off, 1 the whole queue, 2 this track
+    in property <bool> shuffle;
     in property <int> focus-col: -1;       // remote focus, see music_nav in lib.rs
     callback toggle();
     callback next();
     callback prev();
     callback close();
     callback repeat-clicked();
+    callback shuffle-clicked();
     callback seek-to(float);
     callback expand();
     // Phones: cover and title, play/pause, next and close; the rest is in Now Playing.
@@ -2716,17 +2839,21 @@ component MiniPlayer inherits Rectangle {
             VerticalLayout { alignment: center; IconButton { icon: "next"; focused: root.focus-col == 3; clicked => { root.next(); } } }
             if !root.compact: VerticalLayout {
                 alignment: center;
+                IconButton { icon: "shuffle"; active: root.shuffle; focused: root.focus-col == 4; clicked => { root.shuffle-clicked(); } }
+            }
+            if !root.compact: VerticalLayout {
+                alignment: center;
                 IconButton {
                     icon: root.repeat == 2 ? "repeat-one" : "repeat";
                     active: root.repeat > 0;
-                    focused: root.focus-col == 4;
+                    focused: root.focus-col == 5;
                     clicked => { root.repeat-clicked(); }
                 }
             }
         }
         if !root.compact: Rectangle { horizontal-stretch: 1; }
         if !root.compact: Text { text: root.position-text + " / " + root.duration-text; color: Theme.secondary; font-size: 12px; vertical-alignment: center; }
-        VerticalLayout { alignment: center; IconButton { icon: "close"; size: 28px; icon-size: 12px; focused: root.focus-col == 5; clicked => { root.close(); } } }
+        VerticalLayout { alignment: center; IconButton { icon: "close"; size: 28px; icon-size: 12px; focused: root.focus-col == 6; clicked => { root.close(); } } }
     }
 }
 
@@ -3435,6 +3562,12 @@ export component AppWindow inherits Window {
     callback switch-profile();
     callback row-more(int);
     callback billboard-play();
+    // Home's scroll positions, kept here while Home is rebuilt (scroll.rs).
+    in-out property <length> home-shelf-y;
+    in-out property <length> home-grid-y;
+    in property <int> home-grid-reset;
+    pure callback home-row-x(string) -> length;
+    callback home-set-row-x(string, length);
     in property <[Poster]> grid;
     in property <string> grid-title;
     in property <bool> grid-square;
@@ -3446,6 +3579,8 @@ export component AppWindow inherits Window {
     callback select-tab(int);
     callback select-library(int);
     callback open-item(string);
+    callback open-person(string);
+    in property <PersonHeader> person;        // the person page's header (selected-library -4)
     in-out property <bool> add-source-open;
     in-out property <bool> sources-open;    // the Settings window
     in property <bool> can-tv-mode;         // desktop: Settings offers TV Mode
@@ -3552,6 +3687,7 @@ export component AppWindow inherits Window {
     callback music-close();
     callback music-seek-to(float);
     in property <int> music-repeat;          // 0 off, 1 all, 2 one
+    in property <bool> music-shuffle;
     in property <image> music-art-large;
     in property <[Track]> music-queue;
     in property <int> music-queue-index;
@@ -3567,6 +3703,7 @@ export component AppWindow inherits Window {
     callback now-playing(bool);
     callback music-jump(string);
     callback music-repeat-cycle();
+    callback music-shuffle-toggle();
     in property <bool> detail-can-shuffle;
     callback shuffle-detail();
 
@@ -3642,6 +3779,11 @@ export component AppWindow inherits Window {
         billboard: root.billboard;
         billboard-play => { root.billboard-play(); }
         row-more(i) => { root.row-more(i); }
+        shelf-y <=> root.home-shelf-y;
+        grid-y <=> root.home-grid-y;
+        grid-reset: root.home-grid-reset;
+        row-x(t) => { return root.home-row-x(t); }
+        set-row-x(t, x) => { root.home-set-row-x(t, x); }
         grid: root.grid;
         grid-title: root.grid-title;
         grid-square: root.grid-square;
@@ -3652,6 +3794,7 @@ export component AppWindow inherits Window {
         filters: root.filter-chips;
         az: root.az;
         search-rows: root.search-rows;
+        person: root.person;
         filter-chip(i) => { root.filter-chip(i); }
         loading: root.loading;
         search-text <=> root.search-text;
@@ -3705,6 +3848,7 @@ export component AppWindow inherits Window {
         toggle-watched => { root.toggle-watched(); }
         toggle-favourite => { root.toggle-favourite(); }
         open(id) => { root.open-item(id); }
+        open-person(id) => { root.open-person(id); }
         play-track(id) => { root.play-track(id); }
         back => { root.back(); }
         play => { root.play-detail(); }
@@ -3734,6 +3878,8 @@ export component AppWindow inherits Window {
         next => { root.music-next(); }
         prev => { root.music-prev(); }
         repeat-clicked => { root.music-repeat-cycle(); }
+        shuffle: root.music-shuffle;
+        shuffle-clicked => { root.music-shuffle-toggle(); }
         seek-to(t) => { root.music-seek-to(t); }
         jump(id) => { root.music-jump(id); }
         close => { root.now-playing(false); }
@@ -3765,6 +3911,8 @@ export component AppWindow inherits Window {
         repeat: root.music-repeat;
         focus-col: Nav.active && Nav.zone == "music" ? Nav.col : -1;
         repeat-clicked => { root.music-repeat-cycle(); }
+        shuffle: root.music-shuffle;
+        shuffle-clicked => { root.music-shuffle-toggle(); }
         expand => { root.now-playing(true); }
     }
 

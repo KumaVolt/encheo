@@ -306,6 +306,12 @@ impl Player {
         let _ = self.mpv.set_property("playlist-pos", index as i64);
     }
 
+    /// Move the playlist entry at `from` to `to`, earlier in the list (`to` <= `from`). The song
+    /// that's playing keeps playing, wherever it moves.
+    pub fn playlist_move(&self, from: usize, to: usize) {
+        let _ = self.mpv.command("playlist-move", &[&from.to_string(), &to.to_string()]);
+    }
+
     pub fn playlist_pos(&self) -> Option<usize> {
         self.mpv.get_property::<i64>("playlist-pos").ok().and_then(|i| usize::try_from(i).ok())
     }

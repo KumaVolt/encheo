@@ -533,12 +533,40 @@ impl Item {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tag {
     pub tag: String,
     /// Photo, on people (directors, writers, producers).
     #[serde(default)]
     pub thumb: Option<String>,
+    /// People: the tag's number on a server (`13815`), or their id in Plex's catalogue on a
+    /// catalogue title (`5d776825…`).
+    #[serde(default, deserialize_with = "opt_string_or_number")]
+    pub id: Option<String>,
+    /// People on a server's titles: their id in Plex's catalogue.
+    #[serde(default)]
+    pub tag_key: Option<String>,
+}
+
+impl Tag {
+    /// The person's id in Plex's catalogue (or, from Jellyfin, on its server), for their page.
+    pub fn person_id(&self) -> Option<&str> {
+        person_id(&self.tag_key, &self.id)
+    }
+}
+
+fn person_id<'a>(tag_key: &'a Option<String>, id: &'a Option<String>) -> Option<&'a str> {
+    // A server's own tag numbers aren't catalogue ids.
+    tag_key.as_deref().or_else(|| id.as_deref().filter(|i| !i.chars().all(|c| c.is_ascii_digit()))).filter(|i| !i.is_empty())
+}
+
+fn opt_string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    })
 }
 
 /// A score from an outside source, e.g. `imdb://image.rating` 6.7 or
@@ -551,13 +579,48 @@ pub struct Rating {
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Role {
     pub tag: String,
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
     pub thumb: Option<String>,
+    /// As on [`Tag`].
+    #[serde(default, deserialize_with = "opt_string_or_number")]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub tag_key: Option<String>,
+}
+
+impl Role {
+    pub fn person_id(&self) -> Option<&str> {
+        person_id(&self.tag_key, &self.id)
+    }
+}
+
+/// A person's page: who they are, and what they've been in or made.
+#[derive(Clone, Debug, Default)]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+    pub thumb: Option<String>,
+    pub summary: Option<String>,
+    /// `1974-11-11`.
+    pub born: Option<String>,
+    pub died: Option<String>,
+    pub birth_place: Option<String>,
+    /// Their titles, a group per kind of credit (Actor, Director, …), as the source groups them.
+    pub credits: Vec<Credits>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Credits {
+    /// "Actor", "Director", "Producer", "Writer", "Appearances", …
+    pub title: String,
+    /// Films and shows, newest first.
+    pub items: Vec<Item>,
 }
 
 /// One version of an item (a movie can have a 4K and a 1080p file).

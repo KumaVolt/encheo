@@ -420,6 +420,31 @@ impl Server {
         .await
     }
 
+    /// A person (`id` as on their [`Role::person_id`]): who they are, and the films and shows of
+    /// theirs on this server, newest first. Only this server's titles: Jellyfin has no catalogue.
+    pub async fn person(&self, id: &str) -> Result<Option<encheo_plex::Person>> {
+        let raw = self.raw_id(id);
+        let v = self.json(self.get(&format!("/Users/{}/Items/{raw}", self.uid()))).await?;
+        let Some(name) = v["Name"].as_str().map(String::from) else { return Ok(None) };
+        let date = |k: &str| v[k].as_str().and_then(|d| d.get(..10)).map(String::from);
+        let items = self
+            .items(&format!(
+                "/Users/{}/Items?PersonIds={raw}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=ProductionYear,SortName&SortOrder=Descending&Fields={FIELDS}",
+                self.uid()
+            ))
+            .await?;
+        Ok(Some(encheo_plex::Person {
+            id: id.to_string(),
+            thumb: self.image(raw, "Primary", v["ImageTags"]["Primary"].as_str()),
+            summary: v["Overview"].as_str().filter(|s| !s.trim().is_empty()).map(String::from),
+            born: date("PremiereDate"),
+            died: date("EndDate"),
+            birth_place: v["ProductionLocations"][0].as_str().map(String::from),
+            credits: if items.is_empty() { vec![] } else { vec![encheo_plex::Credits { title: "In your library".into(), items }] },
+            name,
+        }))
+    }
+
     /// Seasons of a show, episodes of a season, albums of an artist, tracks of an album.
     pub async fn children(&self, id: &str) -> Result<Vec<Item>> {
         let raw = self.raw_id(id);
@@ -662,16 +687,21 @@ impl Server {
         if kind == ItemKind::Album {
             item.parent_title = s("AlbumArtist");
         }
-        item.genres = v["Genres"].as_array().into_iter().flatten().filter_map(|g| g.as_str()).map(|g| Tag { tag: g.into(), thumb: None }).collect();
-        item.countries = v["ProductionLocations"].as_array().into_iter().flatten().filter_map(|g| g.as_str()).map(|g| Tag { tag: g.into(), thumb: None }).collect();
+        item.genres = v["Genres"].as_array().into_iter().flatten().filter_map(|g| g.as_str()).map(|g| Tag { tag: g.into(), ..Default::default() }).collect();
+        item.countries = v["ProductionLocations"].as_array().into_iter().flatten().filter_map(|g| g.as_str()).map(|g| Tag { tag: g.into(), ..Default::default() }).collect();
         for p in v["People"].as_array().into_iter().flatten() {
             let name = p["Name"].as_str().unwrap_or_default().to_string();
             let thumb = p["Id"].as_str().and_then(|pid| self.image(pid, "Primary", p["PrimaryImageTag"].as_str()));
+            // The person's page: their id on this server, with its prefix like an item's.
+            let tag_key = p["Id"].as_str().filter(|pid| !pid.is_empty()).map(|pid| format!("{}{pid}", self.prefix));
+            let tag = |tag: String, thumb: Option<String>| Tag { tag, thumb, tag_key: tag_key.clone(), ..Default::default() };
             match p["Type"].as_str() {
-                Some("Actor") | Some("GuestStar") => item.cast.push(Role { tag: name, role: p["Role"].as_str().map(String::from), thumb }),
-                Some("Director") => item.directors.push(Tag { tag: name, thumb }),
-                Some("Writer") => item.writers.push(Tag { tag: name, thumb }),
-                Some("Producer") => item.producers.push(Tag { tag: name, thumb }),
+                Some("Actor") | Some("GuestStar") => {
+                    item.cast.push(Role { tag: name, role: p["Role"].as_str().map(String::from), thumb, tag_key: tag_key.clone(), ..Default::default() })
+                }
+                Some("Director") => item.directors.push(tag(name, thumb)),
+                Some("Writer") => item.writers.push(tag(name, thumb)),
+                Some("Producer") => item.producers.push(tag(name, thumb)),
                 _ => {}
             }
         }

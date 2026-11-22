@@ -86,7 +86,7 @@ mod tests {
     use encheo_plex::Tag;
 
     fn tags(words: &[&str]) -> Vec<Tag> {
-        words.iter().map(|w| Tag { tag: w.to_string(), thumb: None }).collect()
+        words.iter().map(|w| Tag { tag: w.to_string(), ..Default::default() }).collect()
     }
 
     #[test]

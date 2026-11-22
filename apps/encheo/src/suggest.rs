@@ -94,7 +94,7 @@ fn show(ui: &AppWindow, found: Suggestions) {
 }
 
 /// The Plex account to ask the catalogue with (the profile's own, for its watchlist).
-fn account() -> Option<(encheo_plex::Plex, String)> {
+pub(crate) fn account() -> Option<(encheo_plex::Plex, String)> {
     with_state(|s| s.session.token.clone().map(|t| (plex(&s.session), t)))
 }
 
@@ -196,7 +196,7 @@ pub(crate) fn catalog_id(mut item: Item) -> Item {
 pub(crate) type Library = (String, String, backend::Backend);
 
 /// The movie and TV libraries, with their servers (on the UI thread: state lives there).
-fn libraries() -> Vec<Library> {
+pub(crate) fn libraries() -> Vec<Library> {
     let keys: Vec<(String, String)> = with_state(|s| {
         s.library_keys
             .iter()
@@ -208,7 +208,7 @@ fn libraries() -> Vec<Library> {
     keys.into_iter().filter_map(|(key, kind)| backend_for(&key).map(|b| (key, kind, b))).collect()
 }
 
-async fn index(libraries: Vec<Library>) -> Arc<Vec<Item>> {
+pub(crate) async fn index(libraries: Vec<Library>) -> Arc<Vec<Item>> {
     if let Ok(i) = INDEX.lock()
         && let Some((at, list)) = i.as_ref()
         && at.elapsed() < INDEX_AGE
@@ -236,7 +236,7 @@ async fn index(libraries: Vec<Library>) -> Arc<Vec<Item>> {
 }
 
 /// Your copy of a catalogue title: the same Plex guid, else the same title, year and kind.
-fn own_copy<'a>(index: &'a [Item], c: &Item) -> Option<&'a Item> {
+pub(crate) fn own_copy<'a>(index: &'a [Item], c: &Item) -> Option<&'a Item> {
     index
         .iter()
         .find(|i| c.guid.is_some() && i.guid == c.guid)
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn related_and_genres_rank_first() {
-        let g = |t: &str| encheo_plex::Tag { tag: t.into(), thumb: None };
+        let g = |t: &str| encheo_plex::Tag { tag: t.into(), ..Default::default() };
         let item = |key: &str, title: &str, guid: Option<&str>, genres: &[&str], year: u32| Item {
             rating_key: key.into(),
             title: title.into(),

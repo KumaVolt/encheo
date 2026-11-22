@@ -5,7 +5,7 @@
 //! Needs a Plex account token; nothing here touches a server.
 
 use crate::model::{Envelope, Hubs};
-use crate::{Item, Plex, Result, Row};
+use crate::{Credits, Item, Person, Plex, Result, Row};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -31,6 +31,49 @@ struct SearchResult {
 struct ItemsContainer {
     #[serde(default, rename = "Metadata")]
     metadata: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersonMetadata {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    thumb: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    born_at: Option<String>,
+    #[serde(default)]
+    died_at: Option<String>,
+    #[serde(default)]
+    birth_place: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PersonContainer {
+    #[serde(default, rename = "Metadata")]
+    metadata: Vec<PersonMetadata>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CreditsContainer {
+    #[serde(default, rename = "CreditGroup")]
+    groups: Vec<CreditGroup>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CreditGroup {
+    #[serde(default)]
+    title: String,
+    #[serde(default, rename = "Credit")]
+    credits: Vec<Credit>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct Credit {
+    #[serde(default, rename = "Metadata")]
+    metadata: Option<serde_json::Value>,
 }
 
 /// Films and shows only; one odd entry is skipped rather than failing the list.
@@ -65,6 +108,49 @@ impl Plex {
         let Some(key) = checked(rating_key) else { return Ok(None) };
         let e: Envelope<ItemsContainer> = Self::json(self.discover_get(token, &format!("/library/metadata/{key}"))).await?;
         Ok(items(e.container.metadata).into_iter().next())
+    }
+
+    /// A person (`id` from [`crate::Role::person_id`]): who they are, and their films and shows
+    /// by kind of credit, newest first. Credits carry no guid; they get the one Plex gives the
+    /// same title on a server (`plex://movie/<key>`), so your own copies can be found.
+    pub async fn catalog_person(&self, token: &str, id: &str) -> Result<Option<Person>> {
+        let Some(id) = checked(id) else { return Ok(None) };
+        let e: Envelope<PersonContainer> = Self::json(self.discover_get(token, &format!("/library/people/{id}"))).await?;
+        let Some(p) = e.container.metadata.into_iter().next() else { return Ok(None) };
+        let c: Envelope<CreditsContainer> = Self::json(self.discover_get(token, &format!("/library/people/{id}/credits"))).await?;
+        let credits = c
+            .container
+            .groups
+            .into_iter()
+            .map(|g| {
+                let mut seen = std::collections::HashSet::new();
+                let mut items: Vec<Item> = items(g.credits.into_iter().filter_map(|c| c.metadata))
+                    .into_iter()
+                    .filter(|i| seen.insert(i.rating_key.clone()))
+                    .map(|mut i| {
+                        if i.guid.is_none() {
+                            let kind = if i.kind == crate::ItemKind::Show { "show" } else { "movie" };
+                            i.guid = Some(format!("plex://{kind}/{}", i.rating_key));
+                        }
+                        i
+                    })
+                    .collect();
+                // Newest first; titles without a year (not out yet) at the top.
+                items.sort_by_key(|i| std::cmp::Reverse(i.year.unwrap_or(u32::MAX)));
+                Credits { title: g.title, items }
+            })
+            .filter(|g| !g.items.is_empty())
+            .collect();
+        Ok(Some(Person {
+            id: id.to_string(),
+            name: p.title,
+            thumb: p.thumb,
+            summary: p.summary.filter(|s| !s.trim().is_empty()),
+            born: p.born_at,
+            died: p.died_at,
+            birth_place: p.birth_place,
+            credits,
+        }))
     }
 
     /// Titles related to a catalogue title: its collection, then more from its cast and crew.

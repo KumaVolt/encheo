@@ -15,7 +15,9 @@ mod langs;
 mod lyrics;
 mod filters;
 mod profiles;
+mod people;
 mod requests;
+mod scroll;
 mod suggest;
 mod progress;
 mod shares;
@@ -128,6 +130,8 @@ struct State {
     artist_albums: Vec<Item>,
     /// Music repeat: 0 off, 1 the whole queue, 2 the current track.
     music_repeat: u8,
+    /// Music shuffle: the queue plays in a random order.
+    music_shuffle: bool,
     /// Where the remote focus was before it moved to the music bar.
     music_return: Option<(SharedString, i32, i32)>,
     music: Option<MusicQueue>,
@@ -140,7 +144,12 @@ struct State {
 
 /// Music plays from an mpv playlist; this mirrors it so we know which Plex item each entry is.
 struct MusicQueue {
+    /// The songs in the order they play (the same as mpv's playlist).
     items: Vec<Item>,
+    /// The songs in their own order (album, playlist), for turning shuffle off again.
+    original: Vec<Item>,
+    /// Where each song in `items` sits in `original`.
+    slots: Vec<usize>,
     index: usize,
     last_report: Instant,
     art_url: String,
@@ -372,6 +381,7 @@ fn load_profile() {
 }
 
 fn enter_home() {
+    people::forget();
     load_profile();
     with_state(|s| s.share_view = None);
     let ui = ui();
@@ -812,6 +822,7 @@ fn recent_poster((item, count): &(Item, usize), landscape: bool) -> Poster {
 }
 
 fn select_library(index: i32) {
+    people::forget();
     let ui = ui();
     ui.set_selected_library(index);
     if ui.global::<Nav>().get_zone() == "content" {
@@ -1060,6 +1071,11 @@ fn apply_image(ui: &AppWindow, url: &str, img: &Image) {
         d.image = img.clone();
         ui.set_detail(d);
     }
+    let mut p = ui.get_person();
+    if p.art_url == url {
+        p.image = img.clone();
+        ui.set_person(p);
+    }
     if with_state(|s| s.music.as_ref().is_some_and(|m| m.art_url == url)) {
         ui.set_music_art(img.clone());
     }
@@ -1121,6 +1137,7 @@ fn open_item(id: String) {
         return play_music(vec![item], 0);
     }
     if item.kind == ItemKind::Collection {
+        scroll::grid_to_top(&ui());
         return open_collection(item);
     }
     show_detail(item);
@@ -1132,6 +1149,7 @@ const SONGS_TAB: i32 = 2;
 /// A music library's tab.
 fn select_tab(tab: i32) {
     with_state(|s| s.music_tab = tab);
+    scroll::grid_to_top(&ui());
     select_library(ui().get_selected_library());
 }
 
@@ -1209,6 +1227,7 @@ fn reload_page(selected: i32) {
             Some(c) => open_collection(c),
             None => enter_home(),
         },
+        people::PERSON_PAGE => people::reload(),
         i => select_library(i),
     }
 }
@@ -1673,14 +1692,15 @@ fn scores(item: &Item) -> Vec<Score> {
 
 /// Director first, then the cast in billing order, then writers and producers.
 fn people(item: &Item) -> Vec<Person> {
-    let person = |name: &str, role: &str, thumb: Option<&str>| {
+    // (Their page: people.rs. An id only Plex's catalogue or a Jellyfin server knows.)
+    let person = |name: &str, role: &str, thumb: Option<&str>, id: Option<&str>| {
         let url = art_url(thumb, 200, 200);
-        Person { name: name.into(), role: role.into(), image: want_image(&url), art_url: url.into() }
+        Person { id: id.unwrap_or_default().into(), name: name.into(), role: role.into(), image: want_image(&url), art_url: url.into() }
     };
-    let mut out: Vec<Person> = item.directors.iter().map(|d| person(&d.tag, "Director", d.thumb.as_deref())).collect();
-    out.extend(item.cast.iter().take(24).map(|r| person(&r.tag, r.role.as_deref().unwrap_or(""), r.thumb.as_deref())));
-    out.extend(item.writers.iter().take(3).map(|w| person(&w.tag, "Writer", w.thumb.as_deref())));
-    out.extend(item.producers.iter().take(3).map(|p| person(&p.tag, "Producer", p.thumb.as_deref())));
+    let mut out: Vec<Person> = item.directors.iter().map(|d| person(&d.tag, "Director", d.thumb.as_deref(), d.person_id())).collect();
+    out.extend(item.cast.iter().take(24).map(|r| person(&r.tag, r.role.as_deref().unwrap_or(""), r.thumb.as_deref(), r.person_id())));
+    out.extend(item.writers.iter().take(3).map(|w| person(&w.tag, "Writer", w.thumb.as_deref(), w.person_id())));
+    out.extend(item.producers.iter().take(3).map(|p| person(&p.tag, "Producer", p.thumb.as_deref(), p.person_id())));
     out
 }
 
@@ -1796,11 +1816,10 @@ fn shuffle_detail() {
 /// Albums and artists: play every track, in order or shuffled. False for anything else.
 fn play_music_detail(shuffle: bool) -> bool {
     let kind = ui().get_detail_kind();
-    let order = move |tracks: Vec<Item>| if shuffle { shuffled(tracks) } else { tracks };
     match kind.as_str() {
         "album" | "playlist" => {
             let tracks = with_state(|s| s.album_tracks.clone());
-            play_music(order(tracks), 0);
+            start_queue(tracks, 0, shuffle);
         }
         "artist" => {
             // An artist's tracks are its albums' tracks, album by album.
@@ -1817,7 +1836,7 @@ fn play_music_detail(shuffle: bool) -> bool {
                 }
                 on_ui(move |ui| {
                     ui.set_loading(false);
-                    play_music(order(tracks), 0);
+                    start_queue(tracks, 0, shuffle);
                 });
             });
         }
@@ -2778,6 +2797,7 @@ fn search(query: String) {
         let ui = ui();
         ui.set_screen("home".into());
         ui.set_selected_library(-2);
+        scroll::grid_to_top(&ui);
         ui.set_grid_title(format!("Results for “{query}”").into());
         ui.set_grid_square(false);
         ui.set_loading(true);
@@ -2828,6 +2848,7 @@ fn open_tv_search() {
     let ui = ui();
     ui.set_screen("home".into());
     ui.set_selected_library(-2);
+    scroll::grid_to_top(&ui);
     with_state(|s| s.generation += 1);
     let text = ui.get_search_text().to_string();
     if text.trim().is_empty() {
@@ -2923,28 +2944,115 @@ fn refresh() {
 // ---------- Music ----------
 
 fn play_music(items: Vec<Item>, start: usize) {
+    start_queue(items, start, false);
+}
+
+/// Play these songs from `start`, or (shuffle) all of them in a random order.
+fn start_queue(items: Vec<Item>, start: usize, shuffle: bool) {
     let Some(p) = player() else { return toast(&ui(), "The player didn't start (libmpv missing?).") };
-    let items: Vec<Item> = items.into_iter().filter(|i| i.primary_part().is_some()).collect();
-    if items.is_empty() {
+    // Only songs that can be streamed, so the queue and mpv's playlist stay in step. `at`: where
+    // the start song (or the next one that's kept) ends up.
+    let (mut kept, mut urls, mut at) = (Vec::new(), Vec::new(), 0);
+    for (n, item) in items.into_iter().enumerate() {
+        if n <= start {
+            at = kept.len();
+        }
+        if item.primary_part().is_none() {
+            continue;
+        }
+        let Some(url) = shares::music_url(&item).or_else(|| backend_for(&item.rating_key)?.stream_url(&item)) else {
+            continue;
+        };
+        kept.push(item);
+        urls.push(url);
+    }
+    if kept.is_empty() {
         return toast(&ui(), "Nothing to play.");
     }
-    let start = start.min(items.len() - 1);
-    for (n, item) in items.iter().enumerate() {
-        let url = match shares::music_url(item).or_else(|| backend_for(&item.rating_key)?.stream_url(item)) {
-            Some(u) => u,
-            None => continue,
-        };
+    let slots: Vec<usize> = if shuffle { shuffled((0..kept.len()).collect()) } else { (0..kept.len()).collect() };
+    for (n, &i) in slots.iter().enumerate() {
         if n == 0 {
-            p.load(&url, None);
+            p.load(&urls[i], None);
         } else {
-            p.append(&url);
+            p.append(&urls[i]);
         }
     }
-    p.set_playlist_pos(start);
+    p.set_playlist_pos(if shuffle { 0 } else { at.min(kept.len() - 1) });
     p.set_repeat(with_state(|s| s.music_repeat));
-    with_state(|s| s.music = Some(MusicQueue { items, index: usize::MAX, last_report: Instant::now(), art_url: String::new(), art_large_url: String::new(), lyrics: HashMap::new(), lyrics_loading: None, lyrics_shown: String::new() }));
+    let items = slots.iter().map(|&i| kept[i].clone()).collect();
+    with_state(|s| {
+        s.music_shuffle = shuffle;
+        s.music = Some(MusicQueue {
+            items,
+            original: kept,
+            slots,
+            index: usize::MAX,
+            last_report: Instant::now(),
+            art_url: String::new(),
+            art_large_url: String::new(),
+            lyrics: HashMap::new(),
+            lyrics_loading: None,
+            lyrics_shown: String::new(),
+        })
+    });
+    ui().set_music_shuffle(shuffle);
     ui().set_music_active(true);
     music_tick(&ui());
+}
+
+/// The play order (as places in the queue's own order) for `len` songs with song `current`
+/// playing: shuffle on, that song first and the others shuffled after it; off, the own order.
+fn shuffle_order(len: usize, current: usize, on: bool) -> Vec<usize> {
+    if on {
+        std::iter::once(current).chain(shuffled((0..len).filter(|&i| i != current).collect())).collect()
+    } else {
+        (0..len).collect()
+    }
+}
+
+/// The playlist moves (from, to) that turn order `now` into `target` (the same slots), each to
+/// an earlier place, as mpv's playlist-move takes them.
+fn playlist_moves(mut now: Vec<usize>, target: &[usize]) -> Vec<(usize, usize)> {
+    let mut moves = Vec::new();
+    for (i, want) in target.iter().enumerate() {
+        if let Some(j) = now[i..].iter().position(|s| s == want).map(|j| j + i)
+            && j != i
+        {
+            let s = now.remove(j);
+            now.insert(i, s);
+            moves.push((j, i));
+        }
+    }
+    moves
+}
+
+/// Shuffle on or off while music plays: the song keeps playing, the rest of the queue is
+/// reordered around it.
+fn toggle_shuffle() {
+    let Some(p) = player() else { return };
+    let pos = p.playlist_pos();
+    let on = with_state(|s| !s.music_shuffle);
+    let Some((now, current)) = with_state(|s| {
+        let q = s.music.as_ref()?;
+        let index = pos.filter(|&i| i < q.slots.len()).unwrap_or(q.index);
+        Some((q.slots.clone(), *q.slots.get(index)?))
+    }) else {
+        return;
+    };
+    let target = shuffle_order(now.len(), current, on);
+    for (from, to) in playlist_moves(now, &target) {
+        p.playlist_move(from, to);
+    }
+    with_state(|s| {
+        s.music_shuffle = on;
+        if let Some(q) = s.music.as_mut() {
+            q.items = target.iter().map(|&i| q.original[i].clone()).collect();
+            q.index = target.iter().position(|&i| i == current).unwrap_or(0);
+            q.slots = target;
+        }
+    });
+    ui().set_music_shuffle(on);
+    refresh_tracks();
 }
 
 fn music_tick(ui: &AppWindow) {
@@ -3239,7 +3347,8 @@ fn music_jump(id: &str) {
     }
 }
 
-/// Remote focus on Now Playing: row 0 the controls, then the queue.
+/// Remote focus on Now Playing: row 0 the controls (Previous, Play/Pause, Next, Shuffle, Repeat,
+/// Lyrics), then the queue.
 fn np_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
     use slint::platform::Key;
     let is = |k: Key| SharedString::from(k).as_str() == key;
@@ -3258,7 +3367,8 @@ fn np_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
                 0 => ui.invoke_music_prev(),
                 1 => ui.invoke_music_toggle(),
                 2 => ui.invoke_music_next(),
-                3 => cycle_repeat(),
+                3 => toggle_shuffle(),
+                4 => cycle_repeat(),
                 _ => {
                     ui.set_lyrics_open(!lyrics);
                     music_tick(ui);
@@ -3276,7 +3386,7 @@ fn np_nav(ui: &AppWindow, row: i32, col: i32, key: &str, enter: bool) -> bool {
     } else if row == 0 && is(Key::LeftArrow) {
         set_focus(ui, "np", 0, (col - 1).max(0));
     } else if row == 0 && is(Key::RightArrow) {
-        set_focus(ui, "np", 0, (col + 1).min(4));
+        set_focus(ui, "np", 0, (col + 1).min(5));
     } else if is(Key::DownArrow) && row < rows {
         // Into the queue at the song that's playing; into the lyrics at the line being sung.
         let here = if lyrics { ui.get_music_lyric_index().max(0) } else { with_state(|s| s.music.as_ref().map_or(0, |q| q.index as i32)) };
@@ -3324,7 +3434,7 @@ fn leave_music_bar() {
 }
 
 /// Remote focus on the music bar: the song (opens Now Playing), Previous, Play/Pause, Next,
-/// Repeat, Close.
+/// Shuffle, Repeat, Close.
 fn music_nav(ui: &AppWindow, col: i32, key: &str, enter: bool) -> bool {
     use slint::platform::Key;
     let is = |k: Key| SharedString::from(k).as_str() == key;
@@ -3338,13 +3448,14 @@ fn music_nav(ui: &AppWindow, col: i32, key: &str, enter: bool) -> bool {
             1 => ui.invoke_music_prev(),
             2 => ui.invoke_music_toggle(),
             3 => ui.invoke_music_next(),
-            4 => cycle_repeat(),
+            4 => toggle_shuffle(),
+            5 => cycle_repeat(),
             _ => music_close(),
         }
     } else if is(Key::LeftArrow) {
         set_focus(ui, "music", 0, (col - 1).max(0));
     } else if is(Key::RightArrow) {
-        set_focus(ui, "music", 0, (col + 1).min(5));
+        set_focus(ui, "music", 0, (col + 1).min(6));
     } else if is(Key::UpArrow) {
         leave_music_bar();
     }
@@ -3368,6 +3479,7 @@ enum DetailRow {
     Episodes,
     Albums,
     Tracks,
+    People,
     Related,
 }
 
@@ -3384,6 +3496,8 @@ fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     let (seasons, episodes, albums, tracks, related) = with_models(|m| {
         (m.seasons.row_count(), m.episodes.row_count(), m.albums.row_count(), m.tracks.row_count(), m.related.row_count())
     });
+    // Cast and crew whose page can open.
+    let people = with_models(|m| m.people.iter().take_while(|p| !p.id.is_empty()).count());
     let mut rows = vec![(DetailRow::Actions, actions)];
     if ui.get_detail_is_show() {
         rows.push((DetailRow::Seasons, seasons));
@@ -3395,6 +3509,7 @@ fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     if kind == "album" || kind == "playlist" {
         rows.extend(std::iter::repeat_n((DetailRow::Tracks, 1), tracks));
     }
+    rows.push((DetailRow::People, people));
     rows.push((DetailRow::Related, related));
     // Tell the UI which row index each section starts at.
     let nav = ui.global::<Nav>();
@@ -3404,6 +3519,7 @@ fn detail_rows(ui: &AppWindow) -> Vec<(DetailRow, usize)> {
     nav.set_d_albums(first(DetailRow::Albums));
     nav.set_d_tracks(first(DetailRow::Tracks));
     nav.set_d_related(first(DetailRow::Related));
+    nav.set_d_people(first(DetailRow::People));
     rows
 }
 
@@ -3503,7 +3619,10 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
                 0 => ui.global::<Nav>().set_search_request(ui.global::<Nav>().get_search_request() + 1),
                 1 => select_library(-1),
                 r if r == last => shares::open_sources(),
-                r => select_library(r - 2),
+                r => {
+                    scroll::grid_to_top(ui);
+                    select_library(r - 2)
+                }
             }
             if row > 0 && row != last {
                 set_focus(ui, "side", row, 0);
@@ -3613,7 +3732,7 @@ fn home_nav(ui: &AppWindow, zone: &str, row: i32, col: i32, key: &str, enter: bo
     let cols = ui.global::<Nav>().get_grid_cols().max(1);
     // Search: rows of suggestions under the results, each a line of its own for the remote.
     let shelves: Vec<Vec<SharedString>> =
-        if selected == -2 { ui.get_search_rows().iter().map(|r| r.items.iter().map(|p| p.id).collect()).collect() } else { vec![] };
+        if selected == -2 || selected == people::PERSON_PAGE { ui.get_search_rows().iter().map(|r| r.items.iter().map(|p| p.id).collect()).collect() } else { vec![] };
     let grid_rows = if ids.is_empty() { 0 } else { (ids.len() as i32 - 1) / cols + 1 };
     if row >= grid_rows && !shelves.is_empty() {
         let r = (row - grid_rows).clamp(0, shelves.len() as i32 - 1);
@@ -3847,6 +3966,11 @@ fn detail_activate(ui: &AppWindow, kind: DetailRow, row: i32, col: i32, rows: &[
                 open_item(p.id.to_string());
             }
         }
+        DetailRow::People => {
+            if let Some(p) = with_models(|m| m.people.row_data(col as usize)) {
+                people::open(p.id.to_string());
+            }
+        }
     }
 }
 
@@ -3971,6 +4095,9 @@ fn go_back() -> bool {
         }
     } else if tv_search_page(&ui) && ui.global::<Nav>().get_zone() == "content" {
         set_focus(&ui, "keys", 0, 0);
+    } else if people::back() {
+    } else if ui.get_screen() == "home" && ui.get_selected_library() == people::PERSON_PAGE {
+        select_library(-1);
     } else if ui.get_screen() == "home" && ui.get_selected_library() == -2 {
         ui.set_search_text(SharedString::new());
         enter_home();
@@ -4334,7 +4461,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.on_billboard_play(play_billboard);
     ui.on_play_trailer(play_trailer);
     ui.on_new_code(begin_signin);
-    ui.on_select_library(select_library);
+    ui.on_select_library(|i| {
+        scroll::grid_to_top(&crate::ui());
+        select_library(i)
+    });
+    scroll::install(&ui);
     ui.on_open_item(|id| open_item(id.to_string()));
     ui.on_skip_plex(|| {
         with_state(|s| {
@@ -4355,6 +4486,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     ui.on_play_detail(play_detail);
+    ui.on_open_person(|id| people::open(id.to_string()));
     ui.on_play_from_start(play_from_start);
     ui.on_toggle_watched(toggle_watched);
     ui.on_toggle_favourite(toggle_favourite);
@@ -4484,6 +4616,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
     ui.on_music_close(music_close);
     ui.on_music_repeat_cycle(cycle_repeat);
+    ui.on_music_shuffle_toggle(toggle_shuffle);
     ui.on_shuffle_detail(shuffle_detail);
     ui.on_select_tab(select_tab);
     ui.on_now_playing(now_playing);
@@ -4591,6 +4724,35 @@ mod tests {
         assert!(pieces.len() > 50);
         assert_eq!(pieces.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n\n"), super::NOTICES);
         assert!(super::NOTICES.contains("FFmpeg") && super::NOTICES.contains("GNU LESSER GENERAL PUBLIC LICENSE"));
+    }
+
+    #[test]
+    fn shuffle_reorders_the_queue_around_the_playing_song() {
+        use super::{playlist_moves, shuffle_order};
+        // Apply mpv's playlist-move (to an earlier place) to a list.
+        let apply = |mut v: Vec<usize>, moves: &[(usize, usize)]| {
+            for &(from, to) in moves {
+                assert!(to <= from);
+                let s = v.remove(from);
+                v.insert(to, s);
+            }
+            v
+        };
+        for current in [0, 3, 9] {
+            let on = shuffle_order(10, current, true);
+            assert_eq!(on[0], current, "the playing song comes first");
+            let mut sorted = on.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..10).collect::<Vec<_>>(), "every song once");
+            let own: Vec<usize> = (0..10).collect();
+            assert_eq!(apply(own.clone(), &playlist_moves(own.clone(), &on)), on);
+            // Off again: back to the own order.
+            let off = shuffle_order(10, current, false);
+            assert_eq!(off, own);
+            assert_eq!(apply(on.clone(), &playlist_moves(on, &off)), off);
+        }
+        assert_eq!(shuffle_order(1, 0, true), vec![0]);
+        assert!(playlist_moves(vec![0, 1, 2], &[0, 1, 2]).is_empty());
     }
 
     #[test]

@@ -307,6 +307,7 @@ fn hash_id(id: &str) -> u64 {
 pub(crate) fn open(id: &str) -> bool {
     let Some((is_dir, index, path)) = locate(id) else { return is_share_id(id) };
     if is_dir {
+        scroll::grid_to_top(&ui());
         browse(index, path);
     } else {
         play_file(index, &path);

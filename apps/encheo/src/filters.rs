@@ -275,6 +275,7 @@ fn apply(ui: &AppWindow, change: impl FnOnce(&mut LibraryQuery)) {
         s.session.save();
         s.filters = Some(c);
     });
+    scroll::grid_to_top(ui);
     select_library(ui.get_selected_library());
     // Clear goes away once nothing is filtered: the focus stays on the bar.
     let nav = ui.global::<Nav>();
