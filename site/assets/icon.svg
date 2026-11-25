@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Encheo's icon, "Shelves": three library rows that read as an E, the top one playing.
+       make_icons.py draws the same shapes for each platform. -->
+  <rect width="100" height="100" rx="22" fill="#1c1c1f"/>
+  <g transform="translate(-2.75 1.75)">
+    <rect x="24" y="24" width="38" height="12" rx="6" fill="#f5a33b"/>
+    <path d="M66 22 L80 30 L66 38 Z" fill="#f5a33b" stroke="#f5a33b" stroke-width="3" stroke-linejoin="round"/>
+    <rect x="24" y="44" width="40" height="12" rx="6" fill="#bf8134"/>
+    <rect x="24" y="64" width="52" height="12" rx="6" fill="#88602d"/>
+  </g>
+</svg>

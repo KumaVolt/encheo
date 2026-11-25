@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy policy | Encheo</title>
+  <meta name="description" content="What the Encheo app and this website do with your data: no account, no analytics, and only the services listed here.">
+  <link rel="canonical" href="https://encheo.kumavolt.dev/privacy/">
+  <meta name="theme-color" content="#1c1c1f">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="preload" href="/assets/fonts/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="https://kumavolt.dev/bar/bar.js" defer></script>
+</head>
+<body class="page">
+  <kumavolt-bar style="display:block;height:44px;background:#141416"></kumavolt-bar>
+  <nav class="top">
+    <a class="brand" href="/"><img src="/assets/icon.svg" alt="" width="28" height="28"><span>Encheo</span></a>
+    <div class="links">
+      <a href="/#features">Features</a>
+      <a href="/#download">Download</a>
+      <a href="https://github.com/KumaVolt/encheo">Source</a>
+    </div>
+  </nav>
+
+  <main class="doc">
+    <h1>Privacy policy</h1>
+    <p class="updated">Last updated 25 November 2026</p>
+
+    <p>Encheo is a media player made by KumaVolt. This page covers the Encheo app on every platform, including the version on Google Play, and this website.</p>
+    <p>In short: there's no Encheo account, no analytics and no advertising. KumaVolt doesn't receive any data from the app. The app talks to the servers you add and, for a few extras, to the public services listed below.</p>
+
+    <h2>What the app stores on your device</h2>
+    <ul>
+      <li>The servers and shares you add, and what you need to sign in to them (for Plex, an access token from Plex; for other sources, the user name and password you enter).</li>
+      <li>Your settings, favourites, playback positions and preferred audio and subtitle languages.</li>
+    </ul>
+    <p>This stays in the app's own folder on your device and is never sent to KumaVolt. Removing a source in Settings, or signing out of Plex, deletes its sign-in; uninstalling the app deletes everything. Artwork is only kept in memory while the app runs.</p>
+
+    <h2>Who the app talks to</h2>
+    <table>
+      <thead><tr><th>Service</th><th>When</th><th>What it receives</th></tr></thead>
+      <tbody>
+        <tr><td>Your own servers and shares (Plex, Jellyfin, Emby, SMB, NFS, WebDAV, SFTP, FTP, DLNA)</td><td>Whenever you browse or play</td><td>The requests needed to list and play your media, with your sign-in for that server. Plex and Jellyfin also receive your watch progress, as with any player.</td></tr>
+        <tr><td>Plex (plex.tv)</td><td>Only if you sign in with Plex</td><td>Sign-in, your list of servers and Home profiles, your watchlist, and searches in Plex's catalogue, under <a href="https://www.plex.tv/about/privacy-legal/">Plex's privacy policy</a>.</td></tr>
+        <tr><td>Overseerr or Jellyseerr</td><td>Only if you add one</td><td>Your requests and searches. It's your own server; artwork for its results comes from TMDB (image.tmdb.org).</td></tr>
+        <tr><td>LRCLIB (lrclib.net)</td><td>When you open lyrics and your server has none</td><td>The song's title, artist, album and length.</td></tr>
+        <tr><td>AniList (anilist.co)</td><td>When an anime title has no trailer on your server</td><td>The title.</td></tr>
+        <tr><td>YouTube or Dailymotion</td><td>Only when you play a trailer</td><td>The trailer request, under their own privacy policies.</td></tr>
+      </tbody>
+    </table>
+    <p>These services see your IP address, as with any internet request. None of them receive your files, your library or anything that identifies you to KumaVolt.</p>
+
+    <h2>Permissions on Android</h2>
+    <ul>
+      <li><b>Internet:</b> to reach your servers and the services above.</li>
+      <li><b>Foreground service and wake lock:</b> to keep music playing with the screen off and show playback controls.</li>
+    </ul>
+
+    <h2>Children</h2>
+    <p>Encheo isn't directed at children and doesn't knowingly collect any data from anyone.</p>
+
+    <h2>This website</h2>
+    <p>encheo.kumavolt.dev sets no cookies and has no analytics. It's hosted on GitHub Pages, which logs visitors' IP addresses for security under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>. To show the newest version on the download links, your browser asks GitHub's API for the latest release. The bar at the top loads from kumavolt.dev and doesn't track you either.</p>
+
+    <h2>Changes and questions</h2>
+    <p>If this policy changes, this page changes with it, with a new date at the top. Questions go in an <a href="https://github.com/KumaVolt/encheo/issues">issue on GitHub</a>.</p>
+  </main>
+
+  <footer class="foot">
+    <div class="row">
+      <a class="brand" href="/"><img src="/assets/icon.svg" alt="" width="22" height="22"><span>Encheo</span></a>
+      <a href="https://github.com/KumaVolt/encheo">Source</a>
+      <a href="https://github.com/KumaVolt/encheo/issues">Report a problem</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/KumaVolt/encheo/blob/main/LICENSE">Licence</a>
+    </div>
+    <p>Made by <a href="https://kumavolt.dev/">KumaVolt</a>. Plex, Jellyfin and Emby are trademarks of their owners.</p>
+  </footer>
+</body>
+</html>

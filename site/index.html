@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Encheo: one player for Plex, Jellyfin, Emby and your files</title>
+  <meta name="description" content="Encheo is a free, open-source media player for Windows, macOS, Linux, Android and Google TV. It plays your Plex, Jellyfin and Emby libraries and the files on your network as they are, up to 4K HDR.">
+  <link rel="canonical" href="https://encheo.kumavolt.dev/">
+  <meta name="theme-color" content="#1c1c1f">
+  <meta name="color-scheme" content="dark">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Encheo">
+  <meta property="og:title" content="Encheo: one player for everything you already have">
+  <meta property="og:description" content="Plex, Jellyfin, Emby and the files on your network in one library, played as they are. Free and open source.">
+  <meta property="og:image" content="https://encheo.kumavolt.dev/assets/home.jpg">
+  <meta property="og:image:alt" content="Encheo's home screen with Continue Watching and recently added films">
+  <meta property="og:url" content="https://encheo.kumavolt.dev/">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Encheo",
+    "url": "https://encheo.kumavolt.dev/",
+    "description": "A media player for Plex, Jellyfin, Emby and network shares.",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "Windows, macOS, Linux, Android, Google TV",
+    "license": "https://www.mozilla.org/en-US/MPL/2.0/",
+    "downloadUrl": "https://github.com/KumaVolt/encheo/releases",
+    "screenshot": "https://encheo.kumavolt.dev/assets/home.jpg",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+    "codeRepository": "https://github.com/KumaVolt/encheo"
+  }
+  </script>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-512.png">
+  <link rel="preload" href="/assets/fonts/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="/assets/site.js" defer></script>
+  <script src="https://kumavolt.dev/bar/bar.js" defer></script>
+</head>
+<body>
+  <kumavolt-bar style="display:block;height:44px;background:#141416"></kumavolt-bar>
+
+  <header class="title">
+    <div class="backdrop" aria-hidden="true"></div>
+    <nav class="top">
+      <a class="brand" href="/"><img src="/assets/icon.svg" alt="" width="28" height="28"><span>Encheo</span></a>
+      <div class="links">
+        <a href="#features">Features</a>
+        <a href="#download">Download</a>
+        <a href="https://github.com/KumaVolt/encheo">Source</a>
+      </div>
+    </nav>
+
+    <div class="sheet">
+      <h1>Encheo</h1>
+      <div class="actions">
+        <a class="play" id="primary-download" href="#download">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          <span id="primary-label">Download</span>
+        </a>
+        <div class="round">
+          <a href="https://github.com/KumaVolt/encheo" aria-label="Source code on GitHub" title="Source code on GitHub">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>
+          </a>
+          <a href="#download" aria-label="Every download" title="Every download">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <div class="about">
+        <p class="meta">
+          <span>Free</span><span>Windows, macOS, Linux, Android, Google TV</span>
+          <b class="badge">4K</b><b class="badge">HDR10</b><b class="badge">Open source</b>
+        </p>
+        <p class="synopsis">One player for everything you already have: your Plex, Jellyfin and Emby servers and the files on your network. It gathers them into one library with artwork and progress that follows you between devices, and plays every file as it is, from lossless music to 4K HDR.</p>
+        <p class="scores">
+          <span><b class="chip c1">Version</b> <span id="version">0.6.0</span></span>
+          <span><b class="chip c2">Licence</b> MPL-2.0</span>
+          <span><b class="chip c3">Price</b> Free</span>
+        </p>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="sources" aria-labelledby="sources-h">
+      <h2 id="sources-h">Plays from</h2>
+      <ul class="cast">
+        <li><span class="tile t1"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="10" y="9" width="28" height="12" rx="3"/><rect x="10" y="27" width="28" height="12" rx="3"/><circle cx="16" cy="15" r="1.8" class="hole"/><circle cx="16" cy="33" r="1.8" class="hole"/></svg></span><b>Plex</b><span>Sign in with a code</span></li>
+        <li><span class="tile t2"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="10" y="9" width="28" height="12" rx="3"/><rect x="10" y="27" width="28" height="12" rx="3"/><circle cx="16" cy="15" r="1.8" class="hole"/><circle cx="16" cy="33" r="1.8" class="hole"/></svg></span><b>Jellyfin</b><span>Your server's address</span></li>
+        <li><span class="tile t3"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="10" y="9" width="28" height="12" rx="3"/><rect x="10" y="27" width="28" height="12" rx="3"/><circle cx="16" cy="15" r="1.8" class="hole"/><circle cx="16" cy="33" r="1.8" class="hole"/></svg></span><b>Emby</b><span>Your server's address</span></li>
+        <li><span class="tile t4"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 14a3 3 0 0 1 3-3h8l4 4h14a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H11a3 3 0 0 1-3-3z"/></svg></span><b>NAS shares</b><span>SMB and NFS</span></li>
+        <li><span class="tile t5"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M15 34a8 8 0 0 1-1-15.9A11 11 0 0 1 35 20a7 7 0 0 1-1 14z"/></svg></span><b>WebDAV</b><span>Cloud and home servers</span></li>
+        <li><span class="tile t6"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="10" width="32" height="26" rx="3"/><path d="m15 19 5 4-5 4m8 1h9" fill="none" class="line"/></svg></span><b>SFTP and FTP</b><span>Any server you can log in to</span></li>
+        <li><span class="tile t7"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="30" r="4"/><path d="M14 22a14 14 0 0 1 20 0m-25-5a21 21 0 0 1 30 0" fill="none" class="line"/></svg></span><b>DLNA</b><span>Found on your network</span></li>
+        <li><span class="tile t8"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="7" y="11" width="34" height="22" rx="3"/><rect x="18" y="35" width="12" height="3" rx="1.5"/></svg></span><b>Folders</b><span>On your computer</span></li>
+      </ul>
+    </section>
+
+    <section id="features" class="features" aria-label="Features">
+      <article class="feature">
+        <div class="text">
+          <h2>Everything in one home</h2>
+          <p>Continue Watching and recently added from every source, side by side. Progress and watched marks go back to your server, so you can pick up on another device.</p>
+        </div>
+        <img src="/assets/home.jpg" width="1600" height="1000" loading="lazy" alt="Encheo's home screen: Continue Watching and recently added films">
+      </article>
+
+      <article class="feature">
+        <div class="text">
+          <h2>Find something to watch</h2>
+          <p>Sort films and shows by title, date added, release date or rating. Filter by genre, country, decade, age rating or what you haven't seen yet, and jump through the alphabet with the A–Z rail.</p>
+        </div>
+        <img src="/assets/library.jpg" width="1600" height="1000" loading="lazy" alt="A film library as a grid of posters">
+      </article>
+
+      <article class="feature">
+        <div class="text">
+          <h2>Plays the file as it is</h2>
+          <p>Playback runs on <a href="https://mpv.io">mpv</a>, so 4K HDR, lossless audio and unusual formats play without your server converting anything. Skip intros and credits, find subtitles through your server, and go straight on to the next episode.</p>
+        </div>
+        <img src="/assets/movie.jpg" width="1600" height="1000" loading="lazy" alt="A film's page with Play, ratings, formats and the cast">
+      </article>
+
+      <article class="feature">
+        <div class="text">
+          <h2>Music, with the words</h2>
+          <p>Artists, albums, playlists and shuffle, with synced lyrics that light up line by line. On Android it keeps playing with the screen off, with controls on the lock screen.</p>
+        </div>
+        <img src="/assets/album.jpg" width="1600" height="1000" loading="lazy" alt="An album page with its track list">
+      </article>
+
+      <article class="feature">
+        <div class="text">
+          <h2>From the desk to the sofa</h2>
+          <p>The same app on your computer, phone, tablet and Google TV. Use a mouse, touch, a keyboard or the TV remote.</p>
+        </div>
+        <img src="/assets/show.jpg" width="1600" height="1000" loading="lazy" alt="A TV show's page with its seasons">
+      </article>
+    </section>
+
+    <section id="download" class="download" aria-labelledby="download-h">
+      <h2 id="download-h">Download</h2>
+      <p class="lead">Encheo is early software: every release so far is a preview. macOS and Android get the most testing.</p>
+      <ul class="files">
+        <li data-os="macos">
+          <a data-file="encheo-macos-arm64.zip" href="https://github.com/KumaVolt/encheo/releases">
+            <b>macOS</b><span>Apple silicon</span>
+          </a>
+          <p>Needs mpv: <code>brew install mpv</code>. Not notarised yet, so right-click the app and choose Open the first time.</p>
+        </li>
+        <li data-os="windows">
+          <a data-file="encheo-windows-x86_64-setup.exe" href="https://github.com/KumaVolt/encheo/releases">
+            <b>Windows</b><span>Installer, 10 and 11</span>
+          </a>
+          <p>Not code-signed yet, so SmartScreen may warn: choose More info, then Run anyway. There's also a <a data-file="encheo-windows-x86_64.zip" href="https://github.com/KumaVolt/encheo/releases">portable zip</a>.</p>
+        </li>
+        <li data-os="linux">
+          <a data-file="encheo-linux-x86_64.tar.gz" href="https://github.com/KumaVolt/encheo/releases">
+            <b>Linux</b><span>x86-64</span>
+          </a>
+          <p>Needs libmpv: <code>sudo apt install libmpv2</code>, or your distribution's package.</p>
+        </li>
+        <li data-os="android">
+          <a data-file="encheo-android-arm64.apk" href="https://github.com/KumaVolt/encheo/releases">
+            <b>Android and Google TV</b><span>Android 8 or later</span>
+          </a>
+          <p>Install the APK on phones, tablets and TVs. Previews are signed with a temporary key, so uninstall the old one before installing a newer preview.</p>
+        </li>
+        <li data-os="ios">
+          <a data-file="encheo-ios.ipa" href="https://github.com/KumaVolt/encheo/releases">
+            <b>iPhone and iPad</b><span>Experimental, iOS 16 or later</span>
+          </a>
+          <p>Unsigned: install it with AltStore or SideStore, which sign it with your Apple ID.</p>
+        </li>
+      </ul>
+      <p class="all">Older versions and release notes are on <a href="https://github.com/KumaVolt/encheo/releases">GitHub</a>.</p>
+    </section>
+
+    <section class="faq" aria-labelledby="faq-h">
+      <h2 id="faq-h">Questions</h2>
+      <details>
+        <summary>Do I need a media server?</summary>
+        <p>No. Encheo also plays straight from folders on your computer and from shares on your network (SMB, NFS, WebDAV, SFTP, FTP and DLNA). A server adds things like progress that follows you between devices.</p>
+      </details>
+      <details>
+        <summary>Is there an account, or tracking?</summary>
+        <p>There's no Encheo account and no analytics. Encheo talks to your own servers, and to a few public services for extras such as lyrics and trailers. The <a href="/privacy/">privacy policy</a> lists them.</p>
+      </details>
+      <details>
+        <summary>Does my server need to convert videos?</summary>
+        <p>No. Encheo plays the original file, so your server doesn't have to transcode and you get the full picture and sound quality.</p>
+      </details>
+      <details>
+        <summary>Is Encheo made by Plex, Jellyfin or Emby?</summary>
+        <p>No. Encheo is an independent, open-source app by KumaVolt that works with those servers. It isn't affiliated with or endorsed by them.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="row">
+      <a class="brand" href="/"><img src="/assets/icon.svg" alt="" width="22" height="22"><span>Encheo</span></a>
+      <a href="https://github.com/KumaVolt/encheo">Source</a>
+      <a href="https://github.com/KumaVolt/encheo/issues">Report a problem</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/KumaVolt/encheo/blob/main/LICENSE">Licence</a>
+    </div>
+    <p>Made by <a href="https://kumavolt.dev/">KumaVolt</a>. Plex, Jellyfin and Emby are trademarks of their owners. The screenshots show a made-up library.</p>
+  </footer>
+</body>
+</html>
