@@ -96,7 +96,7 @@ Get the newest build from [Releases](https://github.com/KumaVolt/encheo/releases
 | Windows 10/11 (x64) | `encheo-windows-x86_64-setup.exe` or `encheo-windows-x86_64.zip` | Installer or portable |
 | macOS (Apple silicon) | `encheo-macos-arm64.zip` | Needs mpv: `brew install mpv` |
 | Linux (x86_64) | `encheo-linux-x86_64.tar.gz` | Needs libmpv from your distribution (`libmpv2` on Debian/Ubuntu) |
-| Android phones, tablets, Google TV (arm64) | `encheo-android-arm64.apk` | Sideload; not on Google Play yet |
+| Android phones, tablets, Google TV (arm64) | Google Play (coming soon) | Free on Google Play; or [build it yourself](#development) |
 | iPhone, iPad | `encheo-ios.ipa` | Unsigned: sideload with AltStore or SideStore |
 
 > [!NOTE]

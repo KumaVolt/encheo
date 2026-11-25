@@ -4,11 +4,13 @@
 (() => {
   const REPO = 'KumaVolt/encheo';
   const FALLBACK = 'v0.6.0';
+  const PLAY = '';
   const PRIMARY = {
     macos: ['encheo-macos-arm64.zip', 'Download for macOS'],
     windows: ['encheo-windows-x86_64-setup.exe', 'Download for Windows'],
     linux: ['encheo-linux-x86_64.tar.gz', 'Download for Linux'],
-    android: ['encheo-android-arm64.apk', 'Download for Android'],
+    // Android comes from Google Play only. PLAY is empty until the listing is public.
+    android: [null, 'Coming to Google Play'],
     ios: ['encheo-ios.ipa', 'Download for iPhone'],
   };
 
@@ -27,8 +29,9 @@
     if (version) version.textContent = tag.replace(/^v/, '');
     const button = document.getElementById('primary-download');
     if (button && os) {
-      button.href = `https://github.com/${REPO}/releases/download/${tag}/${PRIMARY[os][0]}`;
-      document.getElementById('primary-label').textContent = PRIMARY[os][1];
+      const [file, label] = PRIMARY[os];
+      button.href = file ? `https://github.com/${REPO}/releases/download/${tag}/${file}` : PLAY || '#download';
+      document.getElementById('primary-label').textContent = os === 'android' && PLAY ? 'Get it on Google Play' : label;
     }
   };
 
