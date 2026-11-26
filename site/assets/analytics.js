@@ -2,7 +2,7 @@
 // OpenCookie banner (loaded first in <head>, it also sets Google Consent Mode).
 // Leave GTM_ID empty to turn analytics off: then nothing loads and the banner stays hidden.
 (() => {
-  const GTM_ID = '';
+  const GTM_ID = 'GTM-N2TMJSQS';
 
   window.dataLayer = window.dataLayer || [];
   // Custom events, e.g. track('file_download', { file: 'encheo-macos-arm64.zip' }).
