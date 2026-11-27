@@ -20,7 +20,8 @@ android {
     defaultConfig {
         applicationId = "app.encheo"
         minSdk = 26
-        targetSdk = 35
+        // Google Play requires new apps and updates to target Android 16 (API 36).
+        targetSdk = 36
         versionName = cargoVersion
         // cargo-apk's numbering, which 0.4 and earlier shipped with (0.4.1 -> 0x01000401), so
         // new versions install over them as updates.

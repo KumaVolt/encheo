@@ -1,0 +1,48 @@
+# The Google Play build: a signed Android App Bundle (.aab), started by hand from the Actions tab.
+# It's signed with the upload key from the repository secrets; Google re-signs it for users
+# (Play App Signing). The bundle is kept for one day, only long enough to upload it to Play.
+name: Google Play
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Tools
+        run: |
+          cargo install cargo-ndk --locked
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+      - name: libmpv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/android-libs.sh
+      - name: Signed bundle
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.PLAY_UPLOAD_KEYSTORE }}
+          ENCHEO_KEYSTORE_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEYSTORE_PASSWORD }}
+          ENCHEO_KEY_ALIAS: ${{ secrets.PLAY_UPLOAD_KEY_ALIAS }}
+          ENCHEO_KEY_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$UPLOAD_KEYSTORE" ] || { echo "The PLAY_UPLOAD_* secrets aren't set." >&2; exit 1; }
+          export ENCHEO_KEYSTORE="$RUNNER_TEMP/upload.p12"
+          printf '%s' "$UPLOAD_KEYSTORE" | base64 -d > "$ENCHEO_KEYSTORE"
+          scripts/android.sh release
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          cp apps/encheo/android/app/build/outputs/bundle/release/app-release.aab "encheo-$version.aab"
+          rm -f "$ENCHEO_KEYSTORE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encheo-play-bundle
+          path: encheo-*.aab
+          retention-days: 1

@@ -12,9 +12,13 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
-    <!-- usesCleartextTraffic: local Plex servers are often reached over plain http://<ip>:32400. -->
+    <!-- usesCleartextTraffic: local Plex servers are often reached over plain http://<ip>:32400.
+         enableOnBackInvokedCallback=false: the app handles Back itself (closing pages, leaving the
+         player), so it needs the Back key; from target API 36 Android otherwise keeps it and
+         closes the app instead. -->
     <application
         android:label="Encheo"
+        android:enableOnBackInvokedCallback="false"
         android:icon="@mipmap/ic_launcher"
         android:banner="@drawable/banner"
         android:usesCleartextTraffic="true">
