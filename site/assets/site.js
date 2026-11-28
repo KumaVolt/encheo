@@ -9,8 +9,9 @@
     macos: ['encheo-macos-arm64.zip', 'Download for macOS'],
     windows: ['encheo-windows-x86_64-setup.exe', 'Download for Windows'],
     linux: ['encheo-linux-x86_64.tar.gz', 'Download for Linux'],
-    // Android comes from Google Play only. PLAY is empty until the listing is public.
-    android: [null, 'Coming to Google Play'],
+    // Android comes from Google Play only. PLAY is empty until the listing is public; until then
+    // the button leads to the Android entry, which explains the closed test.
+    android: [null, 'Test it on Google Play'],
     ios: ['encheo-ios.ipa', 'Download for iPhone'],
   };
 
